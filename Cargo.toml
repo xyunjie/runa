@@ -8,6 +8,9 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/xyunjie/runa"
+homepage = "https://github.com/xyunjie/runa"
+keywords = ["version-manager", "nodejs", "python", "java", "toolchain"]
+categories = ["command-line-utilities", "development-tools"]
 rust-version = "1.88"
 
 [workspace.dependencies]

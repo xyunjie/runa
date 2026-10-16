@@ -1,9 +1,14 @@
 [package]
 name = "runa-cli"
-description = "Command line interface of runa"
+description = "Cross-platform runtime version manager for Node.js, Java, Python, Go, Rust, Ruby, Bun and Deno (CLI)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 rust-version.workspace = true
 
 [[bin]]
