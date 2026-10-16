@@ -447,7 +447,7 @@ function pageDetect() {
   const meta = d.createdAt ? `<span class="detect-meta">${d.refreshing ? icon("refresh", 13, "spin") + "正在检查变化…" : `上次检测 ${ago(d.createdAt)}`}</span>` : "";
   return `<div class="page">
     <div class="page-head"><div><h1 class="page-title">检测与接管</h1><div class="page-sub">接管只登记真实安装位置，不创建链接，原有安装不会被移动或修改。</div></div>
-    <div style="display:flex;gap:12px;align-items:center">${meta}<button class="btn" data-act="detect" ${d.refreshing ? "disabled" : ""}>${icon("refresh", 14, d.refreshing ? "spin" : "")}重新检测</button></div></div>
+    <div style="display:flex;gap:12px;align-items:center">${meta}${d.items.some((x) => !x.adopted) ? `<button class="btn btn-primary" data-act="adopt-all" ${d.refreshing ? "disabled" : ""}>${icon("link", 14)}全部接管</button>` : ""}<button class="btn" data-act="detect" ${d.refreshing ? "disabled" : ""}>${icon("refresh", 14, d.refreshing ? "spin" : "")}重新检测</button></div></div>
     ${mig}${body}</div>`;
 }
 
@@ -652,6 +652,20 @@ async function onAction(btn) {
       btn.disabled = true;
       const ver = await invoke("adopt", { item, name: null }).catch((e) => { btn.disabled = false; return fail("接管失败")(e); });
       toast(`已接管 ${item.tool} ${ver}`, "可在版本列表中像普通版本一样切换");
+      S.detected.items = (await invoke("detect_cached").catch(() => null))?.items ?? S.detected.items;
+      return load({ quiet: true });
+    }
+    case "adopt-all": {
+      const todo = S.detected.items.filter((x) => !x.adopted);
+      if (!todo.length) return;
+      const ok = await confirmDialog({ title: `接管全部 ${todo.length} 个版本？`, body: "只登记真实安装位置，不移动、不修改原有安装。版本号重复时会以「版本-来源」命名，例如 22.16.0-homebrew。", ok: "全部接管" });
+      if (!ok) return;
+      btn.disabled = true;
+      const res = await invoke("adopt_all").catch((e) => { btn.disabled = false; return fail("接管失败")(e); });
+      if (!res) return;
+      const bad = res.filter((r) => r.error);
+      toast(`已接管 ${res.length - bad.length} 个版本${bad.length ? `，${bad.length} 个失败` : ""}`,
+        bad.length ? bad.map((r) => `${r.tool} ${r.version}: ${r.error}`).join("；") : "可在版本列表中像普通版本一样切换");
       S.detected.items = (await invoke("detect_cached").catch(() => null))?.items ?? S.detected.items;
       return load({ quiet: true });
     }

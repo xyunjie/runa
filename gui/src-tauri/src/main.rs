@@ -309,6 +309,18 @@ async fn adopt(item: Detected, name: Option<String>) -> CmdResult<String> {
 }
 
 #[tauri::command]
+async fn adopt_all() -> CmdResult<Vec<detect::AdoptOutcome>> {
+    blocking(move || {
+        let m = manager()?;
+        let items = detect::detect_cached(&m).items;
+        let r = detect::adopt_all(&m, &items);
+        let _ = activate::reshim(&m, &activate::cli_path());
+        Ok(r)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn set_mirror(mode: String) -> CmdResult<Settings> {
     blocking(move || {
         let mut m = manager()?;
@@ -384,6 +396,7 @@ fn main() {
             detect_check,
             migrate_adoptions,
             adopt,
+            adopt_all,
             set_mirror,
             set_proxy,
             setup_shell,

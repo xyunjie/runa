@@ -883,6 +883,36 @@ pub(crate) fn remove_artifacts(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Result of adopting one item in [`adopt_all`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdoptOutcome {
+    pub tool: String,
+    pub version: String,
+    pub home: PathBuf,
+    /// Name it was adopted as (`None` when it failed).
+    pub adopted_as: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Adopt every item that is not adopted yet. When the version name is already taken
+/// (e.g. the same Node version from nvm and Homebrew) it is adopted as `<version>-<provider>`.
+pub fn adopt_all(m: &Manager, items: &[Detected]) -> Vec<AdoptOutcome> {
+    let mut out = Vec::new();
+    for d in items.iter().filter(|d| !d.adopted) {
+        let taken = m.installed(&d.tool).iter().any(|v| v == &d.version);
+        let name = taken.then(|| format!("{}-{}", d.version, d.provider));
+        let r = adopt(m, d, name.as_deref());
+        out.push(AdoptOutcome {
+            tool: d.tool.clone(),
+            version: d.version.clone(),
+            home: d.home.clone(),
+            adopted_as: r.as_ref().ok().cloned(),
+            error: r.err().map(|e| format!("{e:#}")),
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
