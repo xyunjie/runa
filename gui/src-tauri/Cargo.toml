@@ -10,6 +10,12 @@ rust-version = "1.90"
 name = "runa-gui"
 path = "src/main.rs"
 
+[features]
+# Serve the embedded gui/web/dist (custom protocol) also for plain `cargo build` / `cargo run`.
+# `cargo tauri dev` drops this default feature and loads the Vite dev server (devUrl).
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
