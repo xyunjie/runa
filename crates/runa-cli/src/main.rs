@@ -200,7 +200,7 @@ enum Cmd {
     },
     /// MCP 服务（stdio）。不带 --project：全局服务（运行时管理，受桌面端策略约束）；带 --project：绑定一个项目
     #[command(
-        after_help = "示例:\n  runa mcp                       全局 MCP 服务（在 Runa 桌面端 → MCP 一键添加到 AI 客户端）\n  runa mcp config --client cursor\n  runa mcp serve --project .\n  runa mcp config --project . --client cursor\n  runa mcp config --project . --client codex --read-only\n\n客户端: cursor / claude-desktop / claude-code / codex / vscode / windsurf / generic"
+        after_help = "示例:\n  runa mcp                       全局 MCP 服务（在 Runa 桌面端 → MCP 一键添加到 AI 客户端）\n  runa mcp config --client cursor\n  runa mcp serve --project .\n  runa mcp config --project . --client cursor\n  runa mcp config --project . --client codex --read-only\n\n客户端: cursor / claude-desktop / claude-code / codex / vscode / windsurf / opencode / generic"
     )]
     Mcp {
         /// serve（默认）或 config

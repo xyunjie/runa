@@ -348,6 +348,7 @@ pub const CLIENT_IDS: &[&str] = &[
     "claude-code",
     "codex",
     "windsurf",
+    "opencode",
 ];
 
 /// Per-user locations used to find client config files.
@@ -361,6 +362,8 @@ pub struct ClientEnv {
     pub xdg_config: Option<PathBuf>,
     /// `$CODEX_HOME`.
     pub codex_home: Option<PathBuf>,
+    /// `$OPENCODE_CONFIG` (custom OpenCode config file).
+    pub opencode_config: Option<PathBuf>,
 }
 
 impl ClientEnv {
@@ -376,6 +379,7 @@ impl ClientEnv {
             appdata: var("APPDATA"),
             xdg_config: var("XDG_CONFIG_HOME"),
             codex_home: var("CODEX_HOME"),
+            opencode_config: var("OPENCODE_CONFIG"),
         })
     }
 
@@ -410,6 +414,7 @@ pub fn client_name(id: &str) -> &'static str {
         "claude-code" => "Claude Code",
         "codex" => "Codex",
         "windsurf" => "Windsurf",
+        "opencode" => "OpenCode",
         _ => "",
     }
 }
@@ -444,8 +449,30 @@ pub fn config_file(id: &str, env: &ClientEnv) -> Option<(PathBuf, Format)> {
             h.join(".codeium").join("windsurf").join("mcp_config.json"),
             Format::Json("mcpServers"),
         ),
+        "opencode" => (opencode_file(env), Format::Json("mcp")),
         _ => return None,
     })
+}
+
+/// OpenCode global config (https://opencode.ai/docs/config): `$OPENCODE_CONFIG`, else
+/// `$XDG_CONFIG_HOME/opencode/opencode.json` (`~/.config` on every OS); an existing
+/// `opencode.jsonc` is used when there is no `opencode.json`.
+fn opencode_file(env: &ClientEnv) -> PathBuf {
+    if let Some(p) = &env.opencode_config {
+        return p.clone();
+    }
+    let dir = env
+        .xdg_config
+        .clone()
+        .unwrap_or_else(|| env.home.join(".config"))
+        .join("opencode");
+    let json = dir.join("opencode.json");
+    let jsonc = dir.join("opencode.jsonc");
+    if !json.exists() && jsonc.exists() {
+        jsonc
+    } else {
+        json
+    }
 }
 
 pub fn server_args() -> Vec<String> {
@@ -454,6 +481,11 @@ pub fn server_args() -> Vec<String> {
 
 /// The `runa` entry for a JSON config.
 pub fn server_entry(id: &str, exe: &str) -> Value {
+    if id == "opencode" {
+        let mut cmd = vec![exe.to_string()];
+        cmd.extend(server_args());
+        return json!({ "type": "local", "command": cmd, "enabled": true });
+    }
     let mut v = json!({ "command": exe, "args": server_args() });
     if id == "vscode" {
         v["type"] = json!("stdio");
@@ -480,6 +512,7 @@ fn dummy_env() -> ClientEnv {
         appdata: None,
         xdg_config: None,
         codex_home: None,
+        opencode_config: None,
     }
 }
 
@@ -921,6 +954,7 @@ mod tests {
             appdata: (os == "windows").then(|| home.join("AppData").join("Roaming")),
             xdg_config: None,
             codex_home: None,
+            opencode_config: None,
         }
     }
 
@@ -963,7 +997,14 @@ mod tests {
     fn add_and_remove_files_with_backup() {
         let t = tempfile::tempdir().unwrap();
         let env = env_for(std::env::consts::OS, t.path());
-        for id in ["cursor", "vscode", "claude-desktop", "codex", "windsurf"] {
+        for id in [
+            "cursor",
+            "vscode",
+            "claude-desktop",
+            "codex",
+            "windsurf",
+            "opencode",
+        ] {
             assert!(!is_added(id, &env));
             let c = add_to_file(id, &env, "/opt/runa/bin/runa").unwrap();
             assert!(c.changed && c.backup.is_none(), "{id}");
@@ -992,6 +1033,54 @@ mod tests {
         std::fs::write(&p, "{ // c\n}").unwrap();
         assert!(add_to_file("cursor", &env, "/r").is_err());
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "{ // c\n}");
+    }
+
+    #[test]
+    fn opencode_config() {
+        let t = tempfile::tempdir().unwrap();
+        let mut env = env_for("macos", t.path());
+        let dir = t.path().join(".config").join("opencode");
+        assert_eq!(
+            config_file("opencode", &env).unwrap().0,
+            dir.join("opencode.json")
+        );
+        // existing .jsonc is used; comments are refused untouched
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("opencode.jsonc"), "{ // mine\n \"model\": \"x\" }").unwrap();
+        assert_eq!(
+            config_file("opencode", &env).unwrap().0,
+            dir.join("opencode.jsonc")
+        );
+        assert!(add_to_file("opencode", &env, "/r").is_err());
+        assert!(std::fs::read_to_string(dir.join("opencode.jsonc"))
+            .unwrap()
+            .contains("// mine"));
+        // a comment-free .jsonc is merged, other keys kept
+        std::fs::write(dir.join("opencode.jsonc"), r#"{"$schema":"https://opencode.ai/config.json","mcp":{"other":{"type":"remote","url":"u"}}}"#).unwrap();
+        let c = add_to_file("opencode", &env, "/opt/runa").unwrap();
+        assert!(c.backup.is_some());
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&c.path).unwrap()).unwrap();
+        assert_eq!(v["$schema"], "https://opencode.ai/config.json");
+        assert_eq!(v["mcp"]["other"]["url"], "u");
+        assert_eq!(
+            v["mcp"]["runa"],
+            json!({"type": "local", "command": ["/opt/runa", "mcp"], "enabled": true})
+        );
+        assert!(is_added("opencode", &env));
+        assert!(remove_from_file("opencode", &env).unwrap().changed);
+        assert!(!is_added("opencode", &env));
+        // XDG_CONFIG_HOME and OPENCODE_CONFIG
+        env.xdg_config = Some(t.path().join("xdg"));
+        assert_eq!(
+            config_file("opencode", &env).unwrap().0,
+            t.path().join("xdg/opencode/opencode.json")
+        );
+        env.opencode_config = Some(t.path().join("custom.json"));
+        assert_eq!(
+            config_file("opencode", &env).unwrap().0,
+            t.path().join("custom.json")
+        );
+        assert!(snippet("opencode", "/r").contains("\"type\": \"local\""));
     }
 
     #[test]

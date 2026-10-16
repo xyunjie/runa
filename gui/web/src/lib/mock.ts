@@ -154,6 +154,7 @@ const handlers: Record<string, (a: any) => Promise<unknown>> = {
       ["claude-code", "Claude Code", "cli", "/home/dev/.claude.json", false],
       ["codex", "Codex", "file", "/home/dev/.codex/config.toml", false],
       ["windsurf", "Windsurf", "file", "/home/dev/.codeium/windsurf/mcp_config.json", false],
+      ["opencode", "OpenCode", "file", "/home/dev/.config/opencode/opencode.json", false],
     ].map(([id, name, method, config_path, added]) => ({
       id, name, method, config_path, added, link: method === "deeplink" ? "#" : null, cli: id === "claude-code" ? "/home/dev/.local/bin/claude" : null,
       command_line: id === "claude-code" ? "claude mcp add --scope user runa -- /usr/local/bin/runa mcp" : null,

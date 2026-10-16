@@ -753,7 +753,7 @@ async fn mcp_add(id: String) -> CmdResult<String> {
                 run_claude(&cli, &core_mcp::claude_add_args(&exe))?;
                 Ok("已通过 claude mcp add 添加到 Claude Code（用户级）".into())
             }
-            "claude-desktop" | "codex" | "windsurf" => {
+            "claude-desktop" | "codex" | "windsurf" | "opencode" => {
                 let c = core_mcp::add_to_file(&id, &env, &exe)?;
                 if !c.changed {
                     return Ok(format!("{name} 已配置 runa，无需修改"));

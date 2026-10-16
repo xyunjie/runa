@@ -33,6 +33,7 @@ pub const CLIENT_IDS: &[&str] = &[
     "codex",
     "vscode",
     "windsurf",
+    "opencode",
     "generic",
 ];
 
@@ -56,6 +57,7 @@ pub fn clients(platform: &str) -> Vec<Client> {
         c("codex", "Codex（CLI / IDE / 桌面）", "toml", "项目/.codex/config.toml（受信任项目）或 ~/.codex/config.toml", "将 [mcp_servers.runa] 段合并到配置文件；已有同名段请更新该段。重新连接客户端，可使用 codex mcp list 检查。"),
         c("vscode", "VS Code / GitHub Copilot", "json", "项目/.vscode/mcp.json", "将 runa 项合并到 servers。运行 MCP: List Servers，启动 runa，再在 Agent 的工具列表中启用。"),
         c("windsurf", "Windsurf / Cascade", "json", "从 Cascade 的 MCP 设置中打开 MCP 配置文件", "使用客户端的 Open MCP config file 入口，将 runa 项合并到 mcpServers，保存并刷新/启用服务。"),
+        c("opencode", "OpenCode", "json", "~/.config/opencode/opencode.json（或 OPENCODE_CONFIG）", "将 runa 项合并到 mcp，重启 OpenCode 后可用 opencode mcp list 查看。"),
         c("generic", "通用 JSON（mcpServers）", "json", "AI 客户端的 MCP 配置文件", "适用于接受 mcpServers、command 和 args 的本地 stdio MCP 客户端。将 runa 项合并到现有配置，按客户端说明重新连接。"),
     ]
 }
@@ -101,6 +103,12 @@ pub fn generate(
             a.join(", ")
         );
         return Ok((c, text));
+    }
+    if c.id == "opencode" {
+        let mut cmd = vec![exe.to_string()];
+        cmd.extend(args.iter().cloned());
+        let v = json!({ "mcp": { "runa": { "type": "local", "command": cmd, "enabled": true } } });
+        return Ok((c, serde_json::to_string_pretty(&v)? + "\n"));
     }
     let mut server = json!({ "command": exe, "args": args });
     if matches!(c.id, "cursor" | "vscode" | "claude-code") {
@@ -741,6 +749,12 @@ mod tests {
                     serde_json::from_str(&line("command = ")).unwrap(),
                     serde_json::from_str(&line("args = ")).unwrap(),
                 )
+            } else if c.id == "opencode" {
+                let v: Value = serde_json::from_str(&text).unwrap();
+                let mut cmd: Vec<String> =
+                    serde_json::from_value(v["mcp"]["runa"]["command"].clone()).unwrap();
+                assert_eq!(v["mcp"]["runa"]["type"], "local");
+                (cmd.remove(0), cmd)
             } else {
                 let v: Value = serde_json::from_str(&text).unwrap();
                 let key = if c.id == "vscode" {
