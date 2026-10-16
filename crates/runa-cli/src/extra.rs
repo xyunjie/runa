@@ -30,7 +30,9 @@ pub fn list_json(m: &Manager, tools: &[String], cwd: &Path) -> serde_json::Value
                     "current": cur.as_deref() == Some(v.as_str()),
                     "adopted": r.as_ref().map(|r| r.source == "adopted").unwrap_or(false),
                     "verified": r.as_ref().map(|r| r.verified).unwrap_or(false),
-                    "path": m.paths.install_dir(t, &v),
+                    "disabled": r.as_ref().map(|r| r.disabled).unwrap_or(false),
+                    "provider": r.as_ref().and_then(|r| r.provider.clone()),
+                    "path": m.runtime_root(t, &v),
                 })
             })
             .collect();

@@ -37,9 +37,28 @@ enum Cmd {
         #[arg(long)]
         require_checksum: bool,
     },
-    /// 卸载某个已安装版本
-    #[command(alias = "rm")]
-    Uninstall { tool: String, version: String },
+    /// 卸载某个已安装版本；接管的版本需选择 --forget（只移除管理）或 --purge（彻底卸载）
+    #[command(
+        alias = "rm",
+        after_help = "示例:\n  runa uninstall node 20.11.1\n  runa uninstall java 21.0.11 --forget\n  runa uninstall node 24.13.0 --purge --dry-run"
+    )]
+    Uninstall {
+        tool: String,
+        version: String,
+        /// 接管的版本：通过其所属工具彻底卸载（brew / nvm / pyenv / sdk / asdf / fnm，或删除目录）
+        #[arg(long, conflicts_with = "forget")]
+        purge: bool,
+        /// 接管的版本：只移除 runa 的管理记录，保留原有文件
+        #[arg(long)]
+        forget: bool,
+        /// 只打印将执行的命令和将删除的路径
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// 禁用某个版本（仍保留在列表中，但不会被解析、生成 shim 或加入 PATH）
+    Disable { tool: String, version: Option<String> },
+    /// 重新启用被禁用的版本
+    Enable { tool: String, version: Option<String> },
     /// 设置版本：默认写入当前目录 .tool-versions，-g 写入全局
     Use {
         tool: String,
@@ -86,10 +105,23 @@ enum Cmd {
     Activate { shell: Option<String> },
     /// 输出当前目录的环境变量设置脚本（供钩子调用）
     Env { shell: Option<String> },
-    /// 检测系统中已有的运行时
-    Detect,
-    /// 接管系统已有的运行时（只创建符号链接，不改动原安装）
+    /// 检测系统中已有的运行时（默认使用缓存，机器状态变化或超过 24 小时自动重新扫描）
+    Detect {
+        /// 忽略缓存，重新扫描
+        #[arg(long)]
+        refresh: bool,
+        /// 以 JSON 输出
+        #[arg(long)]
+        json: bool,
+    },
+    /// 接管系统已有的运行时（只登记真实安装位置，不创建链接、不改动原安装）
     Adopt {
+        /// 把旧版（符号链接方式）的接管记录迁移为登记方式
+        #[arg(long, conflicts_with_all = ["tool", "version", "name"])]
+        migrate: bool,
+        /// 与 --migrate 一起使用：只显示将做的修改
+        #[arg(long, requires = "migrate")]
+        dry_run: bool,
         /// 只接管某个工具
         tool: Option<String>,
         /// 只接管该版本
@@ -389,13 +421,18 @@ fn run(cli: Cli) -> Result<i32> {
             }
             println!("{v}");
         }
-        Cmd::Uninstall { tool, version } => {
+        Cmd::Uninstall {
+            tool,
+            version,
+            purge,
+            forget,
+            dry_run,
+        } => {
             let (tool, v2) = split_tool(&tool, Some(version));
-            let version = v2.unwrap();
-            m.uninstall(&tool, &version)?;
-            reshim_quiet(&m);
-            eprintln!("✓ 已卸载 {tool} {version}");
+            return uninstall_cmd(&m, &tool, &v2.unwrap(), purge, forget, dry_run);
         }
+        Cmd::Disable { tool, version } => toggle(&m, &here, &tool, version, true)?,
+        Cmd::Enable { tool, version } => toggle(&m, &here, &tool, version, false)?,
         Cmd::Use {
             tool,
             version,
@@ -454,17 +491,18 @@ fn run(cli: Cli) -> Result<i32> {
                     } else {
                         " "
                     };
-                    let extra = match m.receipt(&t, &v) {
-                        Some(r) if r.source == "adopted" => {
-                            format!(
-                                "  (已接管: {})",
-                                r.origin
-                                    .map(|o| o.display().to_string())
-                                    .unwrap_or_default()
-                            )
-                        }
+                    let r = m.receipt(&t, &v);
+                    let mut extra = match &r {
+                        Some(r) if r.is_adopted() => format!(
+                            "  (已接管{}: {})",
+                            r.provider.as_deref().map(|p| format!(" · {p}")).unwrap_or_default(),
+                            m.runtime_root(&t, &v).display()
+                        ),
                         _ => String::new(),
                     };
+                    if r.map(|r| r.disabled).unwrap_or(false) {
+                        extra.push_str("  [已禁用]");
+                    }
                     println!("  {mark} {v}{extra}");
                 }
             }
@@ -555,31 +593,89 @@ fn run(cli: Cli) -> Result<i32> {
             let shell = shell.unwrap_or_else(activate::default_shell);
             print!("{}", activate::env_script(&m, &shell, &here)?);
         }
-        Cmd::Detect => {
-            let list = detect::detect(&m);
-            if list.is_empty() {
+        Cmd::Detect { refresh, json } => {
+            let rep = if refresh {
+                detect::detect_fresh(&m)
+            } else {
+                detect::detect_cached(&m)
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rep)?);
+                return Ok(0);
+            }
+            if rep.items.is_empty() {
                 eprintln!("没有检测到系统中已安装的运行时");
             }
-            for d in list {
-                let mark = if d.adopted { "（已接管）" } else { "" };
+            for d in &rep.items {
+                let mut mark = match (&d.adopted_as, d.adopted) {
+                    (Some(v), true) if v != &d.version => format!("（已接管为 {v}）"),
+                    (_, true) => "（已接管）".to_string(),
+                    _ => String::new(),
+                };
+                if d.disabled {
+                    mark.push_str("（已禁用）");
+                }
+                let provider = match &d.formula {
+                    Some(f) => format!("{}:{f}", d.provider),
+                    None => d.provider.clone(),
+                };
                 println!(
-                    "{:<8} {:<14} {}  [{}]{mark}",
+                    "{:<7} {:<10} {:<20} {}  [{}]{mark}",
                     d.tool,
                     d.version,
-                    d.exe.display(),
+                    provider,
+                    d.home.display(),
                     d.via
                 );
+            }
+            if rep.from_cache {
+                eprintln!("（来自缓存，使用 --refresh 重新扫描）");
+            }
+        }
+        Cmd::Adopt {
+            migrate: true,
+            dry_run,
+            ..
+        } => {
+            let acts = detect::migrate(&m, dry_run)?;
+            if acts.is_empty() {
+                eprintln!("没有需要迁移的旧接管记录");
+            }
+            for a in &acts {
+                let verb = match (a.action.as_str(), dry_run) {
+                    ("convert", true) => "将转换",
+                    ("convert", false) => "已转换",
+                    (_, true) => "将删除记录",
+                    (_, false) => "已删除记录",
+                };
+                println!(
+                    "{verb} {} {}: {} → {}{}",
+                    a.tool,
+                    a.version,
+                    a.old_origin.as_deref().map(|p| p.display().to_string()).unwrap_or_default(),
+                    a.home.as_deref().map(|p| p.display().to_string()).unwrap_or_else(|| "-".into()),
+                    a.provider.as_deref().map(|p| format!(" [{p}]")).unwrap_or_default()
+                );
+                println!("    {}", a.note);
+                for p in &a.removes {
+                    println!("    {} 删除链接 {}", if dry_run { "将" } else { "已" }, p.display());
+                }
+            }
+            if !dry_run && !acts.is_empty() {
+                reshim_quiet(&m);
             }
         }
         Cmd::Adopt {
             tool,
             version,
             name,
+            ..
         } => {
             let tool = tool
                 .map(|t| m.plugin(&t).map(|p| p.name().to_string()))
                 .transpose()?;
-            let list: Vec<_> = detect::detect(&m)
+            let list: Vec<_> = detect::detect_cached(&m)
+                .items
                 .into_iter()
                 .filter(|d| !d.adopted)
                 .filter(|d| tool.as_deref().map(|t| t == d.tool).unwrap_or(true))
@@ -593,7 +689,12 @@ fn run(cli: Cli) -> Result<i32> {
             }
             for d in list {
                 match detect::adopt(&m, &d, name.as_deref()) {
-                    Ok(v) => eprintln!("✓ 已接管 {} {v} ← {}", d.tool, d.exe.display()),
+                    Ok(v) => eprintln!(
+                        "✓ 已接管 {} {v} ← {} [{}]",
+                        d.tool,
+                        d.home.display(),
+                        d.provider
+                    ),
                     Err(e) => eprintln!("✗ {} {}: {e:#}", d.tool, d.version),
                 }
             }
@@ -769,6 +870,80 @@ fn setup(_m: &Manager, shell: Option<String>) -> Result<()> {
     }
     eprintln!("✓ 已写入 {}，重新打开终端后生效", p.display());
     Ok(())
+}
+
+fn toggle(m: &Manager, here: &Path, tool: &str, version: Option<String>, disable: bool) -> Result<()> {
+    let verb = if disable { "disable" } else { "enable" };
+    let (tool, version) = split_tool(tool, version);
+    let version = version.ok_or_else(|| anyhow!("用法: runa {verb} <工具> <版本>"))?;
+    let tool = m.plugin(&tool)?.name().to_string();
+    for w in m.set_disabled(&tool, &version, disable, here)? {
+        eprintln!("警告: {w}");
+    }
+    reshim_quiet(m);
+    eprintln!("✓ 已{} {tool} {version}", if disable { "禁用" } else { "启用" });
+    Ok(())
+}
+
+fn print_plan(p: &runa_core::uninstall::UninstallPlan) {
+    println!("  {}", p.summary);
+    if let Some(c) = &p.command_line {
+        println!("  命令: {c}");
+    }
+    for path in &p.paths {
+        println!("  删除: {}", path.display());
+    }
+    if p.needs_root {
+        println!("  需要管理员权限（runa 不会自动 sudo）");
+    }
+}
+
+fn uninstall_cmd(
+    m: &Manager,
+    tool: &str,
+    version: &str,
+    purge: bool,
+    forget: bool,
+    dry_run: bool,
+) -> Result<i32> {
+    use runa_core::uninstall::{self, Mode, PlanKind};
+    let tool = m.plugin(tool)?.name().to_string();
+    let adopted = m
+        .receipt(&tool, version)
+        .map(|r| r.is_adopted())
+        .unwrap_or(false);
+    let mode = match (purge, forget) {
+        (true, _) => Mode::Purge,
+        (_, true) => Mode::Forget,
+        _ => Mode::Auto,
+    };
+    if adopted && mode == Mode::Auto {
+        eprintln!("{tool} {version} 是接管的版本，请明确选择：");
+        for (flag, md) in [("--forget", Mode::Forget), ("--purge", Mode::Purge)] {
+            println!("runa uninstall {tool} {version} {flag}");
+            match uninstall::plan(m, &tool, version, md) {
+                Ok(p) => print_plan(&p),
+                Err(e) => println!("  不可用: {e:#}"),
+            }
+        }
+        return Ok(2);
+    }
+    let plan = uninstall::plan(m, &tool, version, mode)?;
+    if dry_run {
+        println!("[dry-run] runa uninstall {tool} {version}");
+        print_plan(&plan);
+        return Ok(if plan.kind == PlanKind::Refuse { 1 } else { 0 });
+    }
+    uninstall::execute(m, &plan)?;
+    reshim_quiet(m);
+    eprintln!(
+        "✓ {} {tool} {version}",
+        match plan.kind {
+            PlanKind::Forget => "已移除管理（文件保留）",
+            _ => "已卸载",
+        }
+    );
+    Ok(0)
 }
 
 pub(crate) fn reshim_quiet(m: &Manager) {
