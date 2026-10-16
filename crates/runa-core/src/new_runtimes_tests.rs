@@ -1,5 +1,8 @@
 //! Rust, Ruby, Bun and Deno end to end with fake directories and fake managers.
 
+// Some helpers are only used by Unix-only tests (fake shell-script managers).
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
+
 use std::path::{Path, PathBuf};
 
 use crate::bootstrap;

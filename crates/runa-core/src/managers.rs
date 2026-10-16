@@ -677,6 +677,7 @@ pub fn install(
 }
 
 #[cfg(test)]
+#[cfg_attr(not(unix), allow(dead_code))]
 mod tests {
     use super::*;
 
