@@ -1252,7 +1252,7 @@ mod tests {
         let m = mgr(t.path());
         let home = t.path().join("rt").join("node-v20.1.0");
         std::fs::create_dir_all(&home).unwrap();
-        let home = std::fs::canonicalize(&home).unwrap();
+        let home = crate::platform::canonicalize(&home);
         let (node_exe, bin) = fake_node(&home, "20.1.0");
         let d = Detected {
             tool: "node".into(),
@@ -1430,7 +1430,7 @@ mod tests {
         let m = mgr(t.path());
         let home = t.path().join("rt").join("node-v21.0.0");
         std::fs::create_dir_all(&home).unwrap();
-        let home = std::fs::canonicalize(&home).unwrap();
+        let home = crate::platform::canonicalize(&home);
         let (node_exe, bin) = fake_node(&home, "21.0.0");
         let mk = |default: bool, ver: &str| Detected {
             tool: "node".into(),
