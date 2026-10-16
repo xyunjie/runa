@@ -12,6 +12,7 @@ pub mod detect;
 pub mod installer;
 pub mod locations;
 pub mod manager;
+pub mod managers;
 pub mod net;
 pub mod paths;
 pub mod platform;

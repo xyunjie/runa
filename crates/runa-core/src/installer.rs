@@ -42,6 +42,18 @@ pub enum Progress {
     Warning {
         message: String,
     },
+    /// Installing through a version manager (`via`), running `command`.
+    Manager {
+        tool: String,
+        version: String,
+        via: String,
+        command: String,
+    },
+    /// One line of the version manager's output.
+    Output {
+        tool: String,
+        line: String,
+    },
 }
 
 /// Metadata stored next to every install as `installs/<tool>/<version>.receipt.json`.

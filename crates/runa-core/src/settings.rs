@@ -21,6 +21,10 @@ pub struct Settings {
     /// `system` (env vars / OS settings), `off`, or a proxy URL
     /// (`http://`, `https://`, `socks5://`, `socks5h://`).
     pub proxy: String,
+    /// Preferred installer per tool for new versions: `auto` (default: a detected
+    /// version manager, else runa's download), `runa`, or a manager name (`nvm`,
+    /// `nvm-windows`, `fnm`, `pyenv`, `pyenv-win`, `sdkman`, `asdf`, `mise`).
+    pub install_via: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Settings {
@@ -29,6 +33,7 @@ impl Default for Settings {
             mirror: "off".into(),
             mirror_rules: vec![],
             proxy: "system".into(),
+            install_via: Default::default(),
         }
     }
 }
@@ -94,6 +99,30 @@ impl Settings {
         }
         self.mirror = m;
         Ok(())
+    }
+
+    /// Set the preferred installer for `tool` (`auto` removes the preference).
+    pub fn set_install_via(&mut self, tool: &str, via: &str) -> Result<()> {
+        let v = via.trim().to_ascii_lowercase();
+        if !crate::managers::VIAS.contains(&v.as_str()) {
+            bail!(
+                "未知安装方式: {via}（可选: {}）",
+                crate::managers::VIAS.join(" / ")
+            );
+        }
+        if v == "auto" {
+            self.install_via.remove(tool);
+        } else {
+            self.install_via.insert(tool.to_string(), v);
+        }
+        Ok(())
+    }
+
+    pub fn install_via(&self, tool: &str) -> &str {
+        self.install_via
+            .get(tool)
+            .map(String::as_str)
+            .unwrap_or("auto")
     }
 
     pub fn set_proxy(&mut self, value: &str) -> Result<()> {

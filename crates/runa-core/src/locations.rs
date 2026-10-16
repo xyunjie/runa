@@ -164,7 +164,8 @@ impl Env {
         v
     }
 
-    fn manager_dir(&self, provider: &str) -> Vec<PathBuf> {
+    /// Data dirs of `provider` (see [`Env::manager_dirs`]), most specific first.
+    pub fn manager_dir(&self, provider: &str) -> Vec<PathBuf> {
         self.manager_dirs()
             .into_iter()
             .filter(|(p, _)| *p == provider)
