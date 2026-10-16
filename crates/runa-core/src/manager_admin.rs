@@ -271,7 +271,64 @@ pub struct ManagerPlan {
     pub rc_edits: Vec<RcEdit>,
     /// Runtimes that disappear and get unregistered from runa.
     pub runtimes: Vec<RegisteredRuntime>,
+    /// Runtime versions installed in the manager's data dir (e.g. `~/.nvm/versions/node/*`).
+    /// When non-empty the user chooses between keeping them (`keep_data`) or deleting them.
+    pub data_runtimes: Vec<PathBuf>,
+    /// Uninstall keeps the data dir: runtimes stay registered, re-labelled `manual`.
+    pub keep_data: bool,
     pub summary: String,
+}
+
+/// Sub-directories of a manager's data dir that hold installed runtimes, and how deep
+/// the version directories sit below them.
+fn runtime_subdirs(manager: &str) -> &'static [(&'static str, usize)] {
+    match manager {
+        "nvm" => &[("versions", 2), ("alias", 0)],
+        "pyenv" | "pyenv-win" => &[("versions", 1)],
+        "sdkman" => &[("candidates", 2)],
+        "asdf" | "mise" => &[("installs", 2)],
+        "fnm" => &[("node-versions", 1), ("aliases", 0)],
+        _ => &[],
+    }
+}
+
+fn dirs_at(d: &Path, depth: usize) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(d) else {
+        return vec![];
+    };
+    let mut kids: Vec<PathBuf> = rd
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n != "current" && !n.to_string_lossy().starts_with('.'))
+        })
+        .collect();
+    kids.sort();
+    if depth <= 1 {
+        return kids;
+    }
+    kids.iter().flat_map(|k| dirs_at(k, depth - 1)).collect()
+}
+
+/// Runtime version directories inside `data` (empty when there are none).
+pub fn data_runtimes(manager: &str, data: &Path) -> Vec<PathBuf> {
+    if manager == "nvm-windows" {
+        return dirs_at(data, 1)
+            .into_iter()
+            .filter(|p| {
+                p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                    n.starts_with('v') && n[1..].starts_with(|c: char| c.is_ascii_digit())
+                })
+            })
+            .collect();
+    }
+    runtime_subdirs(manager)
+        .iter()
+        .filter(|(_, depth)| *depth > 0)
+        .flat_map(|(sub, depth)| dirs_at(&data.join(sub), *depth))
+        .collect()
 }
 
 /// Shell startup files installers write to.
@@ -357,6 +414,18 @@ fn sh_cmd(script: &str, args: &[String]) -> (Vec<String>, String) {
 
 /// What upgrading / uninstalling `name` would do. Changes nothing.
 pub fn plan(m: &Manager, probe: &Probe, name: &str, action: &str) -> Result<ManagerPlan> {
+    plan_with(m, probe, name, action, false)
+}
+
+/// Like [`plan`]; with `keep_data` an uninstall removes only the manager itself (package /
+/// scripts and rc lines) and keeps the runtimes it installed.
+pub fn plan_with(
+    m: &Manager,
+    probe: &Probe,
+    name: &str,
+    action: &str,
+    keep_data: bool,
+) -> Result<ManagerPlan> {
     if !bootstrap::MANAGERS.contains(&name) {
         bail!("未知的版本管理器: {name}");
     }
@@ -378,6 +447,8 @@ pub fn plan(m: &Manager, probe: &Probe, name: &str, action: &str) -> Result<Mana
         env: vec![],
         command_line: None,
         remove_dirs: vec![],
+        data_runtimes: vec![],
+        keep_data: keep_data && action == "uninstall",
         rc_edits: vec![],
         runtimes: if action == "uninstall" {
             info.runtimes.clone()
@@ -394,6 +465,15 @@ pub fn plan(m: &Manager, probe: &Probe, name: &str, action: &str) -> Result<Mana
     let tool = |n: &str| probe.find(n, &[]).map(|x| x.display().to_string());
     let s = |x: &str| x.to_string();
     let origin = info.origin.as_str();
+    if action == "uninstall" {
+        p.data_runtimes = data
+            .as_deref()
+            .map(|d| data_runtimes(name, d))
+            .unwrap_or_default();
+        if p.keep_data && p.data_runtimes.is_empty() && p.runtimes.is_empty() {
+            p.keep_data = false;
+        }
+    }
     let pkg = package_id(name, origin);
     match (action, origin) {
         (_, "system" | "unknown" | "-") => {
@@ -501,7 +581,27 @@ pub fn plan(m: &Manager, probe: &Probe, name: &str, action: &str) -> Result<Mana
             let Some(d) = data.clone() else {
                 return Ok(refuse(p, format!("找不到 {name} 的安装目录")));
             };
-            p.remove_dirs.push(d);
+            if p.keep_data {
+                // delete the manager's own files, keep the directories holding runtimes
+                let keep: Vec<&str> = runtime_subdirs(name).iter().map(|(s, _)| *s).collect();
+                if keep.is_empty() {
+                    return Ok(refuse(
+                        p,
+                        format!("{name} 的运行时与程序在同一目录中，无法只卸载管理器"),
+                    ));
+                }
+                let mut kids: Vec<PathBuf> = std::fs::read_dir(&d)
+                    .map(|rd| rd.flatten().map(|e| e.path()).collect())
+                    .unwrap_or_default();
+                kids.sort();
+                p.remove_dirs.extend(kids.into_iter().filter(|k| {
+                    !k.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| keep.contains(&n))
+                }));
+            } else {
+                p.remove_dirs.push(d);
+            }
             if name == "mise" {
                 p.remove_dirs.push(entry.clone());
             }
@@ -512,7 +612,7 @@ pub fn plan(m: &Manager, probe: &Probe, name: &str, action: &str) -> Result<Mana
     if action == "uninstall" {
         // package-manager installs: the runtimes still live in the data dir
         if p.command.is_some() {
-            if let Some(d) = data.clone().filter(|d| d.is_dir()) {
+            if let Some(d) = data.clone().filter(|d| d.is_dir() && !p.keep_data) {
                 p.remove_dirs.push(d);
             }
             p.rc_edits = rc_edits_for(name, &probe.env.home);
@@ -545,7 +645,17 @@ pub fn plan(m: &Manager, probe: &Probe, name: &str, action: &str) -> Result<Mana
                     p.rc_edits.len()
                 ));
             }
-            if !p.runtimes.is_empty() {
+            if p.keep_data {
+                parts.push(format!(
+                    "保留 {} 个已安装的版本{}",
+                    p.data_runtimes.len(),
+                    if p.runtimes.is_empty() {
+                        String::new()
+                    } else {
+                        format!("，{} 个已登记的运行时改为“手动安装”", p.runtimes.len())
+                    }
+                ));
+            } else if !p.runtimes.is_empty() {
                 parts.push(format!(
                     "移除 {} 个由它管理的运行时并取消登记",
                     p.runtimes.len()
@@ -627,7 +737,21 @@ pub fn execute(
         on_line(format!("清理 {}（已备份为 .runa-bak）", e.file.display()));
         remove_rc_lines(e).with_context(|| format!("修改 {} 失败", e.file.display()))?;
     }
-    if p.action == "uninstall" {
+    if p.action == "uninstall" && p.keep_data {
+        for r in &p.runtimes {
+            if let Some(mut rc) = m.receipt(&r.tool, &r.version) {
+                rc.provider = Some("manual".into());
+                crate::installer::write_receipt(&m.paths, &rc)?;
+            }
+        }
+        if !p.runtimes.is_empty() {
+            rep.notices.push(format!(
+                "已保留 {} 个运行时，来源改为“手动安装”",
+                p.runtimes.len()
+            ));
+        }
+        crate::detect::invalidate_cache(m);
+    } else if p.action == "uninstall" {
         for r in &p.runtimes {
             if let Ok(pl) =
                 crate::uninstall::plan(m, &r.tool, &r.version, crate::uninstall::Mode::Forget)
@@ -780,6 +904,55 @@ mod tests {
         assert!(m.installed("node").is_empty());
         assert_eq!(m.global_version("node"), None);
         assert_eq!(rep.notices.len(), 1);
+    }
+
+    /// `keep_data`: nvm's own files and rc lines go, `versions/` stays, the runtime stays
+    /// registered (provider `manual`) and global.
+    #[test]
+    fn uninstall_nvm_keep_data() {
+        let t = tempfile::tempdir().unwrap();
+        let h = platform::canonicalize(t.path());
+        let nvm = h.join(".nvm");
+        let home = nvm.join("versions/node/v20.1.0");
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::create_dir_all(nvm.join(".git")).unwrap();
+        std::fs::write(nvm.join("nvm.sh"), "nvm() { echo 0.40.3; }\n").unwrap();
+        std::fs::write(nvm.join("nvm-exec"), "").unwrap();
+        let rc = h.join(".bashrc");
+        std::fs::write(&rc, "export NVM_DIR=\"$HOME/.nvm\"\n").unwrap();
+        let m = Manager::with_paths(crate::Paths::with_root(h.join("runa"))).unwrap();
+        adopt(&m, "node", "20.1.0", &home, "nvm");
+        m.set_global("node", "20.1.0").unwrap();
+        let p = probe(&h, vec![]);
+        let full = plan(&m, &p, "nvm", "uninstall").unwrap();
+        assert_eq!(full.data_runtimes, vec![home.clone()]);
+        assert!(!full.keep_data);
+        let pl = plan_with(&m, &p, "nvm", "uninstall", true).unwrap();
+        assert!(pl.keep_data);
+        assert_eq!(
+            pl.remove_dirs,
+            vec![nvm.join(".git"), nvm.join("nvm-exec"), nvm.join("nvm.sh")]
+        );
+        assert_eq!(pl.rc_edits.len(), 1);
+        let rep = execute(&m, &p, &pl, &mut |_| {}).unwrap();
+        assert!(home.is_dir() && !nvm.join("nvm.sh").exists());
+        assert_eq!(std::fs::read_to_string(&rc).unwrap(), "");
+        assert_eq!(m.installed("node"), vec!["20.1.0".to_string()]);
+        assert_eq!(
+            m.receipt("node", "20.1.0").unwrap().provider.as_deref(),
+            Some("manual")
+        );
+        assert_eq!(m.global_version("node").as_deref(), Some("20.1.0"));
+        assert!(rep.unregistered.is_empty());
+        // without any runtimes there is nothing to keep: keep_data falls back to a full uninstall
+        let t2 = tempfile::tempdir().unwrap();
+        let h2 = platform::canonicalize(t2.path());
+        std::fs::create_dir_all(h2.join(".nvm")).unwrap();
+        std::fs::write(h2.join(".nvm/nvm.sh"), "nvm() { echo 0.40.3; }\n").unwrap();
+        let m2 = Manager::with_paths(crate::Paths::with_root(h2.join("runa"))).unwrap();
+        let pl2 = plan_with(&m2, &probe(&h2, vec![]), "nvm", "uninstall", true).unwrap();
+        assert!(!pl2.keep_data && pl2.data_runtimes.is_empty());
+        assert_eq!(pl2.remove_dirs, vec![h2.join(".nvm")]);
     }
 
     /// brew-installed manager: brew uninstall runs (fake brew), the data dir with the

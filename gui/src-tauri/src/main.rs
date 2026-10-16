@@ -315,10 +315,17 @@ async fn manager_info() -> CmdResult<Vec<runa_core::manager_admin::ManagerInfo>>
 async fn manager_plan(
     name: String,
     action: String,
+    keep_data: Option<bool>,
 ) -> CmdResult<runa_core::manager_admin::ManagerPlan> {
     blocking(move || {
         let m = manager()?;
-        runa_core::manager_admin::plan(&m, &runa_core::managers::Probe::current(&m), &name, &action)
+        runa_core::manager_admin::plan_with(
+            &m,
+            &runa_core::managers::Probe::current(&m),
+            &name,
+            &action,
+            keep_data.unwrap_or(false),
+        )
     })
     .await
 }
@@ -329,11 +336,18 @@ async fn manager_execute(
     app: AppHandle,
     name: String,
     action: String,
+    keep_data: Option<bool>,
 ) -> CmdResult<runa_core::manager_admin::ExecReport> {
     blocking(move || {
         let m = manager()?;
         let probe = runa_core::managers::Probe::current(&m);
-        let plan = runa_core::manager_admin::plan(&m, &probe, &name, &action)?;
+        let plan = runa_core::manager_admin::plan_with(
+            &m,
+            &probe,
+            &name,
+            &action,
+            keep_data.unwrap_or(false),
+        )?;
         let rep = runa_core::manager_admin::execute(&m, &probe, &plan, &mut |l| {
             emit_line(&app, &name, l)
         })?;

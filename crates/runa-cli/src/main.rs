@@ -282,6 +282,9 @@ enum ManagerCmd {
     /// 卸载版本管理器及其管理的运行时（按其安装方式；会移除安装脚本写入的 shell 配置行）
     Uninstall {
         name: String,
+        /// 保留它安装的运行时版本（只卸载管理器本身和 shell 配置行；已登记的版本改为手动安装）
+        #[arg(long)]
+        keep_data: bool,
         #[arg(long)]
         dry_run: bool,
         #[arg(long, short = 'y')]
@@ -1106,16 +1109,26 @@ fn manager_cmd(m: &Manager, cmd: ManagerCmd) -> Result<i32> {
         ManagerCmd::Upgrade { .. } => "upgrade",
         _ => "other",
     };
+    let keep_data = matches!(
+        &cmd,
+        ManagerCmd::Uninstall {
+            keep_data: true,
+            ..
+        }
+    );
     match cmd {
         ManagerCmd::Upgrade { name, dry_run, yes }
-        | ManagerCmd::Uninstall { name, dry_run, yes } => {
+        | ManagerCmd::Uninstall {
+            name, dry_run, yes, ..
+        } => {
             use runa_core::manager_admin::{self, PlanKind};
             let action = if matches!(cmd_kind, "upgrade") {
                 "upgrade"
             } else {
                 "uninstall"
             };
-            let p = manager_admin::plan(m, &probe, &name.to_ascii_lowercase(), action)?;
+            let p =
+                manager_admin::plan_with(m, &probe, &name.to_ascii_lowercase(), action, keep_data)?;
             println!("{}", p.summary);
             if let Some(c) = &p.command_line {
                 println!("  命令: {c}");
@@ -1129,7 +1142,21 @@ fn manager_cmd(m: &Manager, cmd: ManagerCmd) -> Result<i32> {
                     println!("    {n}: {l}");
                 }
             }
-            if !p.runtimes.is_empty() {
+            if p.keep_data {
+                println!("  保留 {} 个已安装的版本:", p.data_runtimes.len());
+                for d in &p.data_runtimes {
+                    println!("    {}", d.display());
+                }
+                for r in &p.runtimes {
+                    println!("    {} {} 保持登记，来源改为手动安装", r.tool, r.version);
+                }
+            } else if !p.data_runtimes.is_empty() && action == "uninstall" {
+                println!("  以下已安装的版本会一起删除（加 --keep-data 可保留）:");
+                for d in &p.data_runtimes {
+                    println!("    {}", d.display());
+                }
+            }
+            if !p.keep_data && !p.runtimes.is_empty() {
                 println!("  以下运行时也会被删除并取消登记:");
                 for r in &p.runtimes {
                     println!(
