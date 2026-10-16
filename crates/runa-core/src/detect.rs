@@ -53,6 +53,11 @@ pub struct Detected {
     /// Adopted, and it is runa's global version (computed on every read).
     #[serde(default)]
     pub runa_global: bool,
+    /// OS-provided runtime living directly in a shared prefix (`/usr/bin/python3` from
+    /// apt, `/usr/bin/node`): listed for information only. Adopting it would put the
+    /// whole shared bin dir on PATH, so it can never be adopted or uninstalled.
+    #[serde(default)]
+    pub view_only: bool,
 }
 
 fn candidate_dirs(m: &Manager, tool: &str) -> Vec<(PathBuf, String)> {
@@ -290,6 +295,26 @@ fn scan(m: &Manager) -> Vec<Detected> {
                 // (macOS /usr/bin/java, /usr/bin/python3) and version-manager shims
                 // (pyenv, asdf, ...) whose own location says nothing about the runtime.
                 let Some(home) = query_home(&tool, &p).or_else(|| guess_home(&real, exe)) else {
+                    // a distro runtime directly in /usr (or similar): list it, view-only
+                    if let Some(prefix) = system_prefix_of(&real) {
+                        found.push(Detected {
+                            tool: tool.clone(),
+                            version,
+                            exe: p,
+                            found_in: real.parent().map(Path::to_path_buf).unwrap_or_default(),
+                            home: prefix,
+                            via: via.clone(),
+                            provider: "system".into(),
+                            formula: None,
+                            adopted: false,
+                            adopted_as: None,
+                            disabled: false,
+                            system_default: first_on_path,
+                            runa_global: false,
+                            view_only: true,
+                        });
+                        break;
+                    }
                     continue;
                 };
                 if homes.iter().any(|h| platform::same_path(h, &home)) || m.paths.contains(&home) {
@@ -313,6 +338,7 @@ fn scan(m: &Manager) -> Vec<Detected> {
                     disabled: false,
                     system_default,
                     runa_global: false,
+                    view_only: false,
                 });
                 break; // python3 found -> skip python in the same dir
             }
@@ -394,6 +420,21 @@ pub(crate) fn real_bin_dir(home: &Path, exe: &str) -> Option<PathBuf> {
     [home.join("bin"), home.to_path_buf()]
         .into_iter()
         .find(|d| crate::manager::find_exe_in(std::slice::from_ref(d), exe).is_some())
+}
+
+/// The shared OS prefix an executable lives in (`/usr/bin/node` -> `/usr`), when the
+/// executable itself is OS-owned (see [`locations::owner`]).
+pub(crate) fn system_prefix_of(real_exe: &Path) -> Option<PathBuf> {
+    let dir = real_exe.parent()?;
+    let prefix = if dir
+        .file_name()
+        .is_some_and(|n| n.eq_ignore_ascii_case("bin"))
+    {
+        dir.parent()?
+    } else {
+        dir
+    };
+    (is_system_prefix(prefix) || classify(dir).0 == "system").then(|| prefix.to_path_buf())
 }
 
 /// Shared system prefixes are never a runtime root by themselves (macOS, Linux and
@@ -595,6 +636,14 @@ pub fn annotate(m: &Manager, items: &mut [Detected]) {
 /// No links are created and the original installation is never touched.
 pub fn adopt(m: &Manager, d: &Detected, name: Option<&str>) -> Result<String> {
     m.plugin(&d.tool)?;
+    if d.view_only {
+        bail!(
+            "{} {} 是系统自带的运行时（{}），只能查看，不能接管",
+            d.tool,
+            d.version,
+            d.exe.display()
+        );
+    }
     let version = name.unwrap_or(&d.version).to_string();
     installer::validate_version_name(&version)?;
     if std::fs::symlink_metadata(m.paths.install_dir(&d.tool, &version)).is_ok()
@@ -892,7 +941,7 @@ pub struct AdoptOutcome {
 /// (e.g. the same Node version from nvm and Homebrew) it is adopted as `<version>-<provider>`.
 pub fn adopt_all(m: &Manager, items: &[Detected]) -> Vec<AdoptOutcome> {
     let mut out = Vec::new();
-    for d in items.iter().filter(|d| !d.adopted) {
+    for d in items.iter().filter(|d| !d.adopted && !d.view_only) {
         let taken = m.installed(&d.tool).iter().any(|v| v == &d.version);
         let name = taken.then(|| format!("{}-{}", d.version, d.provider));
         let r = adopt_detected(m, d, name.as_deref());
@@ -1184,6 +1233,7 @@ mod tests {
             disabled: false,
             system_default: false,
             runa_global: false,
+            view_only: false,
         };
         assert_eq!(adopt(&m, &d, None).unwrap(), "20.1.0");
         assert!(
@@ -1305,6 +1355,41 @@ mod tests {
     }
 
     #[test]
+    fn system_prefix_runtimes_are_view_only() {
+        assert_eq!(
+            system_prefix_of(&Path::new("/usr").join("bin").join("node")),
+            Some(PathBuf::from("/usr"))
+        );
+        assert_eq!(
+            system_prefix_of(Path::new("/usr/lib/go-1.22/bin/go")),
+            Some(PathBuf::from("/usr/lib/go-1.22"))
+        );
+        assert_eq!(system_prefix_of(Path::new("/opt/node/bin/node")), None);
+        let t = tempfile::tempdir().unwrap();
+        let m = mgr(t.path());
+        let d = Detected {
+            tool: "python".into(),
+            version: "3.10.12".into(),
+            exe: PathBuf::from("/usr/bin/python3"),
+            found_in: PathBuf::from("/usr/bin"),
+            home: PathBuf::from("/usr"),
+            via: "PATH".into(),
+            provider: "system".into(),
+            formula: None,
+            adopted: false,
+            adopted_as: None,
+            disabled: false,
+            system_default: true,
+            runa_global: false,
+            view_only: true,
+        };
+        let e = adopt(&m, &d, None).unwrap_err();
+        assert!(format!("{e}").contains("只能查看"));
+        assert!(adopt_all(&m, std::slice::from_ref(&d)).is_empty());
+        assert!(m.installed("python").is_empty());
+    }
+
+    #[test]
     fn adopting_the_system_default_makes_it_runa_global() {
         let t = tempfile::tempdir().unwrap();
         let m = mgr(t.path());
@@ -1325,6 +1410,7 @@ mod tests {
             disabled: false,
             system_default: default,
             runa_global: false,
+            view_only: false,
         };
         let (v, g) = adopt_detected(&m, &mk(true, "21.0.0"), None).unwrap();
         assert!(g);

@@ -624,6 +624,9 @@ fn run(cli: Cli) -> Result<i32> {
                 if d.disabled {
                     mark.push_str("（已禁用）");
                 }
+                if d.view_only {
+                    mark.push_str("（系统自带，仅查看）");
+                }
                 if d.system_default {
                     mark.push_str("（当前全局）");
                 }

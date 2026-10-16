@@ -439,7 +439,7 @@ function pageDetect() {
     body = `<div class="list">${d.items.map((x, i) => `<div class="item ${x.disabled ? "is-disabled" : ""} ${x.system_default ? "is-global" : ""}">${mark(x.tool, 32)}
       <div class="main-col"><div class="title">${esc(x.tool)} <span class="ver">${esc(x.version)}</span>${x.system_default ? `<span class="badge ok" title="系统 PATH 中排在最前，当前终端默认使用这个版本">${icon("check", 11)}当前全局</span>` : ""}${x.runa_global ? `<span class="badge">runa 全局</span>` : ""}${providerBadge(x.provider, x.formula)}</div><div class="meta mono" title="${esc(x.exe)}">${esc(shortPath(x.home))}</div></div>
       <span class="badge">${esc(x.via)}</span>
-      ${x.adopted ? `<span class="badge ok">${icon("check", 12)}已接管${x.adopted_as && x.adopted_as !== x.version ? ` · ${esc(x.adopted_as)}` : ""}</span>${x.disabled ? `<span class="badge">已禁用</span>` : ""}` : `<button class="btn btn-sm" data-act="adopt" data-i="${i}">${icon("link", 13)}接管</button>`}
+      ${x.view_only ? `<span class="badge" title="系统自带的运行时直接位于共享目录（如 /usr/bin），只能查看，不能接管或卸载">系统自带 · 仅查看</span>` : x.adopted ? `<span class="badge ok">${icon("check", 12)}已接管${x.adopted_as && x.adopted_as !== x.version ? ` · ${esc(x.adopted_as)}` : ""}</span>${x.disabled ? `<span class="badge">已禁用</span>` : ""}` : `<button class="btn btn-sm" data-act="adopt" data-i="${i}">${icon("link", 13)}接管</button>`}
     </div>`).join("")}</div>`;
   const mig = S.migration.length ? `<div class="callout warn"><span data-icon="alert"></span><div class="grow"><div class="t">有 ${S.migration.length} 个旧版接管记录</div>
       <div class="d">旧版本通过符号链接接管，迁移后改为登记真实安装位置：${S.migration.map((a) => `${esc(a.tool)} ${esc(a.version)}（${a.action === "convert" ? "转换" : "删除无效记录"}）`).join("、")}</div></div>
@@ -447,7 +447,7 @@ function pageDetect() {
   const meta = d.createdAt ? `<span class="detect-meta">${d.refreshing ? icon("refresh", 13, "spin") + "正在检查变化…" : `上次检测 ${ago(d.createdAt)}`}</span>` : "";
   return `<div class="page">
     <div class="page-head"><div><h1 class="page-title">检测与接管</h1><div class="page-sub">接管只登记真实安装位置，不创建链接，原有安装不会被移动或修改。</div></div>
-    <div style="display:flex;gap:12px;align-items:center">${meta}${d.items.some((x) => !x.adopted) ? `<button class="btn btn-primary" data-act="adopt-all" ${d.refreshing ? "disabled" : ""}>${icon("link", 14)}全部接管</button>` : ""}<button class="btn" data-act="detect" ${d.refreshing ? "disabled" : ""}>${icon("refresh", 14, d.refreshing ? "spin" : "")}重新检测</button></div></div>
+    <div style="display:flex;gap:12px;align-items:center">${meta}${d.items.some((x) => !x.adopted && !x.view_only) ? `<button class="btn btn-primary" data-act="adopt-all" ${d.refreshing ? "disabled" : ""}>${icon("link", 14)}全部接管</button>` : ""}<button class="btn" data-act="detect" ${d.refreshing ? "disabled" : ""}>${icon("refresh", 14, d.refreshing ? "spin" : "")}重新检测</button></div></div>
     ${mig}${body}</div>`;
 }
 
