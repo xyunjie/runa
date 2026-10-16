@@ -142,6 +142,11 @@ pub fn install(
     }
     paths.ensure()?;
     let target = Target::current();
+    if !plugin.supports_download(&target) {
+        // the plugin's artifact() explains which manager to use instead
+        plugin.artifact(net, version, &target)?;
+        anyhow::bail!("runa 不提供 {tool} 的下载");
+    }
     let art = plugin.artifact(net, version, &target)?;
     if art.sha256.is_none() && (require_checksum || require_checksum_env()) {
         anyhow::bail!("上游未提供 {tool} {version} 的 SHA256 校验值；--require-checksum 拒绝安装");
@@ -193,6 +198,7 @@ pub fn install(
     let res = (|| -> Result<()> {
         archive::extract(&archive_path, &tmp)?;
         archive::flatten_single_root(&tmp)?;
+        plugin.post_extract(&tmp)?;
         std::fs::rename(&tmp, &dest).with_context(|| format!("移动到 {} 失败", dest.display()))?;
         Ok(())
     })();

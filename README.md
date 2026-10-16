@@ -1,6 +1,6 @@
 # Runa
 
-**Runa** 是一个跨平台（Windows / macOS / Linux）的多语言运行时版本管理器，用 Rust 编写，提供命令行工具 `runa` 和基于 Tauri v2 的桌面客户端。一个工具统一管理 Node.js、Java、Python、Go 等开发版本，并兼容 asdf 的 `.tool-versions`。
+**Runa** 是一个跨平台（Windows / macOS / Linux）的多语言运行时版本管理器，用 Rust 编写，提供命令行工具 `runa` 和基于 Tauri v2 的桌面客户端。一个工具统一管理 Node.js、Java、Python、Go、Rust、Ruby、Bun、Deno 等开发版本（Ruby 通过 rbenv / rvm / mise / asdf 安装，Rust 推荐 rustup），并兼容 asdf 的 `.tool-versions`。
 
 功能设计参考了 [hquip/Vaelen](https://github.com/hquip/Vaelen)（Go + Wails 实现的 `vsm`）。
 

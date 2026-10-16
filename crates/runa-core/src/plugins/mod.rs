@@ -10,11 +10,16 @@ use crate::net::Net;
 use crate::platform::Target;
 use crate::version::VersionReq;
 
+pub mod bun;
+pub mod deno;
 pub mod go;
 pub mod java;
 pub mod manifest;
 pub mod node;
 pub mod python;
+pub mod ruby;
+pub mod rust;
+mod util;
 
 /// A remote version with metadata for UIs.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -67,6 +72,15 @@ pub trait Plugin: Send + Sync {
     }
     /// Where to download `version` for `target`.
     fn artifact(&self, net: &Net, version: &str, target: &Target) -> Result<Artifact>;
+    /// Whether runa can download this tool itself on `target` (Ruby: never, there is no
+    /// portable official binary; Rust on Windows: only through rustup).
+    fn supports_download(&self, _target: &Target) -> bool {
+        true
+    }
+    /// Turn an extracted archive into the final install layout (runs in the staging dir).
+    fn post_extract(&self, _staged: &Path) -> Result<()> {
+        Ok(())
+    }
     /// Directories to put on PATH for an install.
     fn bin_dirs(&self, install_dir: &Path) -> Vec<PathBuf> {
         vec![install_dir.join("bin")]
@@ -133,6 +147,10 @@ impl Registry {
             Arc::new(java::Java),
             Arc::new(python::Python),
             Arc::new(go::Go),
+            Arc::new(rust::Rust),
+            Arc::new(ruby::Ruby),
+            Arc::new(bun::Bun),
+            Arc::new(deno::Deno),
         ];
         let mut warnings = Vec::new();
         for (m, w) in manifest::load_dir(plugins_dir) {

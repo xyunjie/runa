@@ -61,6 +61,9 @@ pub fn legacy_files(tool: &str) -> &'static [&'static str] {
         "python" => &[".python-version"],
         "java" => &[".java-version", ".sdkmanrc"],
         "go" => &[".go-version", "go.mod"],
+        "ruby" => &[".ruby-version"],
+        "rust" => &["rust-toolchain.toml", "rust-toolchain"],
+        "bun" => &[".bun-version"],
         _ => &[],
     }
 }
@@ -71,6 +74,13 @@ pub fn parse_legacy(file_name: &str, text: &str) -> Option<String> {
         "package.json" => package_json_engine(text),
         "go.mod" => go_mod_version(text),
         ".sdkmanrc" => sdkman_java(text),
+        ".ruby-version" => first_meaningful_line(text).map(|v| {
+            // rbenv / chruby accept `ruby-3.3.0`
+            v.strip_prefix("ruby-").map(str::to_string).unwrap_or(v)
+        }),
+        "rust-toolchain.toml" => rust_toolchain_toml(text),
+        "rust-toolchain" if text.contains("[toolchain]") => rust_toolchain_toml(text),
+        "rust-toolchain" => first_meaningful_line(text).map(|c| rust_channel(&c)),
         _ => first_meaningful_line(text),
     }
 }
@@ -105,6 +115,32 @@ fn go_mod_version(text: &str) -> Option<String> {
         }
     }
     go
+}
+
+/// `[toolchain] channel = "1.80.0"` (rustup's rust-toolchain.toml).
+fn rust_toolchain_toml(text: &str) -> Option<String> {
+    let mut in_table = false;
+    for line in text.lines() {
+        let l = line.split('#').next().unwrap_or("").trim();
+        if l.starts_with('[') {
+            in_table = l == "[toolchain]";
+        } else if let Some(rest) = l.strip_prefix("channel").filter(|_| in_table) {
+            let c = rest
+                .trim_start()
+                .strip_prefix('=')?
+                .trim()
+                .trim_matches(['"', '\'']);
+            return (!c.is_empty()).then(|| rust_channel(c));
+        }
+    }
+    None
+}
+
+/// rustup channel -> runa spec: `stable` / `1.80.0` / `1.80`; a host suffix
+/// (`1.80.0-aarch64-apple-darwin`) or date (`nightly-2024-08-01`) is dropped.
+fn rust_channel(c: &str) -> String {
+    let c = c.trim();
+    c.split('-').next().unwrap_or(c).to_string()
 }
 
 /// `.sdkmanrc`: `java=21.0.2-tem` -> `21.0.2`.

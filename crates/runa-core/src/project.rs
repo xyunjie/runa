@@ -124,6 +124,8 @@ impl Project {
             ("PIP_REQUIRE_VIRTUALENV".into(), "true".into()),
             ("PYTHONNOUSERSITE".into(), "1".into()),
             ("CARGO_HOME".into(), p(&["cargo"])),
+            ("DENO_DIR".into(), p(&["cache", "deno"])),
+            ("BUN_INSTALL_CACHE_DIR".into(), p(&["cache", "bun"])),
             ("GRADLE_USER_HOME".into(), p(&["gradle"])),
         ]
     }
