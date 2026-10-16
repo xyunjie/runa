@@ -103,6 +103,11 @@ fn find_tool(m: &Manager, name: &str, extra: &[PathBuf]) -> String {
 /// Directory to delete for a manual install: the whole macOS bundle for
 /// `<bundle>/Contents/Home`, otherwise the home itself.
 pub fn removal_root(home: &Path) -> PathBuf {
+    let home = if home.ends_with("Contents/Home/jre") {
+        home.parent().unwrap_or(home)
+    } else {
+        home
+    };
     if home.ends_with("Contents/Home") {
         if let Some(b) = home.parent().and_then(Path::parent) {
             return b.to_path_buf();
@@ -142,14 +147,18 @@ fn dangerous(p: &Path) -> bool {
         || classify(p).0 == "system"
 }
 
-/// Real home of an adopted version (registry receipt, or legacy symlink target).
+/// Real home of an adopted version. Registry receipts carry it; for legacy (symlink)
+/// adoptions the runtime is re-resolved, because the recorded origin may be a shared bin
+/// dir (`/opt/homebrew/bin`) or a stub prefix (`/usr`) that must never be deleted.
 fn adopted_home(m: &Manager, tool: &str, version: &str, r: &installer::Receipt) -> Option<PathBuf> {
-    let dir = m.paths.install_dir(tool, version);
-    let h = r
-        .home
-        .clone()
-        .or_else(|| std::fs::read_link(&dir).ok())
-        .or_else(|| r.origin.clone())?;
+    let legacy = std::fs::symlink_metadata(m.paths.install_dir(tool, version)).is_ok();
+    let h = match (&r.home, legacy) {
+        (Some(h), false) => h.clone(),
+        _ => {
+            let plugin = m.plugin(tool).ok()?;
+            detect::resolve_legacy(m, &plugin, version, r)?.0
+        }
+    };
     Some(std::fs::canonicalize(&h).unwrap_or(h))
 }
 
@@ -216,8 +225,9 @@ pub fn plan(m: &Manager, tool: &str, version: &str, mode: Mode) -> Result<Uninst
         }
         Mode::Purge => {}
     }
-    let home =
-        home.ok_or_else(|| anyhow!("{tool} {version} 的安装位置未知，只能移除管理（--forget）"))?;
+    let home = home.ok_or_else(|| {
+        anyhow!("无法定位 {tool} {version} 的真实安装位置，只能移除管理（--forget）")
+    })?;
     let hs = home.to_string_lossy().replace('\\', "/");
     let user_home = dirs::home_dir().unwrap_or_default();
     let prefix_of = |marker: &str| -> PathBuf {
@@ -622,6 +632,47 @@ mod tests {
         assert!(plan(&m, "go", "1.22.0", Mode::Forget).is_err());
         execute(&m, &p).unwrap();
         assert!(!m.is_installed("go", "1.22.0"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_origin_bin_dir_is_never_the_purge_target() {
+        let (t, m) = mgr();
+        // old style node adoption: private bin/ with links into a shared bin dir
+        let shared = std::fs::canonicalize(t.path()).unwrap().join("shared-bin");
+        std::fs::create_dir_all(&shared).unwrap();
+        let nd = m.paths.install_dir("node", "20.0.0");
+        std::fs::create_dir_all(nd.join("bin")).unwrap();
+        std::os::unix::fs::symlink(shared.join("node"), nd.join("bin/node")).unwrap();
+        write_receipt(
+            &m.paths,
+            &Receipt {
+                tool: "node".into(),
+                version: "20.0.0".into(),
+                source: "adopted".into(),
+                origin: Some(shared.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // nothing real behind it: purge must refuse instead of deleting the shared dir
+        assert!(plan(&m, "node", "20.0.0", Mode::Purge).is_err());
+        let f = plan(&m, "node", "20.0.0", Mode::Forget).unwrap();
+        assert!(f.paths.iter().all(|p| p.starts_with(&m.paths.root)));
+        execute(&m, &f).unwrap();
+        assert!(shared.is_dir());
+        assert!(!m.is_installed("node", "20.0.0"));
+    }
+
+    #[test]
+    fn removal_root_handles_bundles_and_java8_jre() {
+        let b = Path::new("/u/Library/Java/JavaVirtualMachines/corretto-1.8.0_482");
+        assert_eq!(removal_root(&b.join("Contents/Home")), b);
+        assert_eq!(removal_root(&b.join("Contents/Home/jre")), b);
+        assert_eq!(
+            removal_root(Path::new("/u/sdk/go1.22")),
+            Path::new("/u/sdk/go1.22")
+        );
     }
 
     #[test]

@@ -389,6 +389,12 @@ pub(crate) fn query_home(tool: &str, exe: &Path) -> Option<PathBuf> {
         return None;
     }
     let mut p = PathBuf::from(line);
+    if tool == "java" && p.ends_with("jre") {
+        // Java 8 reports <jdk>/jre; the JDK root is one level up
+        if let Some(parent) = p.parent().filter(|d| d.join("bin").join("java").exists()) {
+            p = parent.to_path_buf();
+        }
+    }
     if tool == "node" {
         // execPath is the binary: <root>/bin/node
         p = std::fs::canonicalize(&p)
@@ -716,22 +722,7 @@ pub fn migrate(m: &Manager, dry_run: bool) -> Result<Vec<MigrationAction>> {
                 continue;
             }
             let removes = artifacts(&dir);
-            let exes = plugin.detect_exes();
-            let mut resolved: Option<(PathBuf, PathBuf)> = None;
-            for exe in &exes {
-                let Some(p) =
-                    legacy_exe(&dir, r.origin.as_deref(), r.home.as_deref(), exe, &plugin)
-                else {
-                    continue;
-                };
-                let real = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
-                if let Some(home) = query_home(&tool, &p).or_else(|| guess_home(&real, exe)) {
-                    if let Some(bin) = real_bin_dir(&home, exe) {
-                        resolved = Some((home, bin));
-                        break;
-                    }
-                }
-            }
+            let resolved = resolve_legacy(m, &plugin, &v, &r);
             let mut act = MigrationAction {
                 tool: tool.clone(),
                 version: v.clone(),
@@ -790,6 +781,30 @@ pub fn migrate(m: &Manager, dry_run: bool) -> Result<Vec<MigrationAction>> {
         }
     }
     Ok(out)
+}
+
+/// Real `(home, bin dir)` behind a legacy (symlink / origin-only) adoption record. The
+/// recorded paths are never trusted as a home by themselves: the runtime is asked.
+pub(crate) fn resolve_legacy(
+    m: &Manager,
+    plugin: &crate::plugins::PluginRef,
+    version: &str,
+    r: &Receipt,
+) -> Option<(PathBuf, PathBuf)> {
+    let tool = plugin.name().to_string();
+    let dir = m.paths.install_dir(&tool, version);
+    for exe in plugin.detect_exes() {
+        let Some(p) = legacy_exe(&dir, r.origin.as_deref(), r.home.as_deref(), exe, plugin) else {
+            continue;
+        };
+        let real = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+        if let Some(home) = query_home(&tool, &p).or_else(|| guess_home(&real, exe)) {
+            if let Some(bin) = real_bin_dir(&home, exe) {
+                return Some((home, bin));
+            }
+        }
+    }
+    None
 }
 
 /// Find the executable a legacy adoption pointed at, without trusting its layout.

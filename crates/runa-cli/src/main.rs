@@ -677,7 +677,7 @@ fn run(cli: Cli) -> Result<i32> {
                 println!("    {}", a.note);
                 for p in &a.removes {
                     println!(
-                        "    {} 删除链接 {}",
+                        "    {}删除 {}",
                         if dry_run { "将" } else { "已" },
                         p.display()
                     );
