@@ -24,7 +24,7 @@
   | python | astral-sh/python-build-standalone（`install_only`，免编译） | `SHA256SUMS` |
   | go | go.dev/dl | JSON 元数据中的 SHA256 |
 - **JSON 声明式插件**：在 `~/.runa/plugins/*.json` 描述下载地址即可管理 deno、bun 等更多工具，示例见 [`examples/plugins/sample.json`](examples/plugins/sample.json)。
-- **检测与接管**：扫描 PATH、`JAVA_HOME`、`GOROOT` 及常见目录中的已有安装，接管时只建符号链接，原安装不受影响。
+- **检测与接管**：扫描 PATH、`JAVA_HOME`、`GOROOT`、常见目录以及 nvm / pyenv / SDKMAN! / asdf / fnm / Homebrew Cellar 的版本仓库；接管只登记真实安装位置（不建链接），原安装不受影响。详见 [检测、接管与卸载](#检测接管与卸载)。
 - **镜像与代理**：一键切换国内镜像（npmmirror、golang.google.cn），代理支持 `http` / `https` / `socks5` / `socks5h`、`off`、`system`。
 - **安全**：解压时防 zip-slip（拒绝 `..`、绝对路径以及指向目录外的符号链接）；上游提供校验值时强制 SHA256 校验。
 
@@ -56,7 +56,8 @@ runa activate fish | source
 | 命令 | 说明 |
 |---|---|
 | `runa install [工具] [版本] [--require-checksum]` | 安装；支持 `node@20` 写法；不带参数时安装当前目录需要但缺失的全部版本；`--require-checksum`（或 `RUNA_REQUIRE_CHECKSUM=1`）在上游没有 SHA256 时拒绝安装 |
-| `runa uninstall <工具> <版本>` | 卸载（对接管的版本只删除链接） |
+| `runa uninstall <工具> <版本> [--forget\|--purge] [--dry-run]` | 卸载；接管的版本必须选择 `--forget`（只移除管理）或 `--purge`（通过所属工具彻底卸载）；`--dry-run` 只打印将执行的命令与路径 |
+| `runa disable <工具> <版本>` / `runa enable <工具> <版本>` | 禁用 / 启用某个版本（禁用后仍在列表中，但不会被解析、生成 shim 或加入 PATH） |
 | `runa use <工具> <版本> [-g]` | 设置项目版本 / 全局版本，未安装时自动安装（`--no-install` 关闭） |
 | `runa list [工具] [--json]` | 已安装版本，`*` 为当前生效 |
 | `runa list-all <工具> [前缀]` | 可安装的远程版本 |
@@ -73,12 +74,38 @@ runa activate fish | source
 | `runa update [--check] [--version vX.Y.Z] [--json]` | 从 GitHub Releases 校验 SHA256 后更新 runa 命令行 |
 | `runa reshim` | 重新生成 shims（如 `npm i -g` 之后） |
 | `runa activate <shell>` / `runa env <shell>` | 输出钩子脚本 / 当前目录的环境变量脚本 |
-| `runa detect` / `runa adopt [工具]` | 检测 / 接管系统已有运行时 |
+| `runa detect [--refresh] [--json]` / `runa adopt [工具] [--version V] [--name N]` | 检测（默认读缓存）/ 接管系统已有运行时 |
+| `runa adopt --migrate [--dry-run]` | 把旧版符号链接方式的接管记录迁移为登记方式 |
 | `runa mirror [off\|cn]` | 查看或设置下载镜像 |
 | `runa proxy [off\|system\|URL]` | 查看或设置代理 |
 | `runa setup [shell] [--remove]` / `runa path-init [shell]` | 写入（或移除）shell 配置文件中的激活代码块（Windows 同时写入用户 PATH） |
 | `runa help [命令]` | 查看总览或某个命令的详细用法与示例 |
 | `runa plugins` / `runa doctor` | 列出工具 / 诊断信息 |
+
+## 检测、接管与卸载
+
+**检测**（`runa detect`）扫描：
+
+- PATH、`JAVA_HOME`、`GOROOT`，以及 `/Library/Java/JavaVirtualMachines`、`~/Library/Java/JavaVirtualMachines`、`/usr/local/go` 等常见目录；
+- 版本管理器的仓库：`~/.nvm/versions/node/*`、`~/.pyenv/versions/*`、`~/.sdkman/candidates/{java,go}/*`、`~/.asdf/installs/{nodejs,python,java,golang}/*`、fnm（`~/.local/share/fnm` 与 `~/Library/Application Support/fnm`）、Homebrew Cellar（`node`、`node@*`、`python@*`、`openjdk`、`openjdk@*`、`go`）。符号链接别名（如 SDKMAN! 的 `current`）会被跳过，同一个真实安装只出现一次。
+
+每个结果都会询问运行时自身的真实安装位置（可穿透 `/usr/bin/java` 之类的系统存根和各种 shim），并标注来源 `provider`：`homebrew`（附 formula，如 `openjdk@17`）、`nvm`、`pyenv`、`sdkman`、`asdf`、`fnm`、`manual`（普通目录）或 `system`（macOS 存根、Xcode / CommandLineTools 自带等）。
+
+结果缓存在 `~/.runa/cache/detect.json`，带有指纹（PATH、`JAVA_HOME`、`GOROOT` 与被扫描目录的修改时间）。指纹不变且不超过 24 小时直接用缓存，`--refresh` 强制重新扫描。桌面端先显示缓存，再在启动和窗口获得焦点时后台检查，发现变化自动刷新。
+
+**接管**（`runa adopt`）只在 `installs/<工具>/<版本>.receipt.json` 中登记真实目录与 bin 目录，不再创建任何符号链接。旧版本创建的符号链接接管仍可正常使用，可用 `runa adopt --migrate --dry-run` 预览、`runa adopt --migrate` 迁移：只删除 runa 目录里的链接（绝不跟随链接），并重新定位真实安装；无法定位的记录（例如早期把 `/usr` 当成 JDK 的记录会重新解析，解析不到则删除）会在输出中说明。
+
+**禁用 / 启用**：`runa disable node 20.11.1` 后该版本仍会列出（标记“已禁用”），但不会参与版本解析、模糊匹配、shims 和 PATH。禁用全局版本或当前目录正在使用的版本时会给出警告。
+
+**卸载**：
+
+| 版本类型 | 命令 | 行为 |
+|---|---|---|
+| runa 下载的 | `runa uninstall node 20.11.1` | 删除 `installs/node/20.11.1` |
+| 接管的 | `runa uninstall <工具> <版本> --forget` | 只删除 runa 的记录，文件保留 |
+| 接管的 | `runa uninstall <工具> <版本> --purge` | 交给所属工具彻底卸载：`brew uninstall <formula>`、`nvm uninstall`、`pyenv uninstall -f`、`sdk uninstall`、`asdf uninstall`、`fnm uninstall`；`manual` 直接删除目录（macOS 的 JDK 删除整个 bundle，如 `…/jbr-21.0.11`）；`system` 拒绝 |
+
+接管的版本不带 `--forget` / `--purge` 时，会打印两种方式各自会做什么并以非零退出码结束。`--dry-run` 只打印命令和路径。需要管理员权限的目录（如 `/Library/Java`）runa 不会使用 sudo，而是给出需要手动执行的命令。桌面端卸载接管版本时提供“只移除管理”（默认）与“彻底卸载”两个选项，并在确认前列出将执行的命令和将删除的路径。
 
 ## 项目环境（一个项目一个环境）
 
@@ -186,11 +213,12 @@ runa completion powershell | Out-String | Invoke-Expression
 ```text
 .tool-versions    全局版本
 settings.json     镜像 / 代理设置
-installs/         各版本安装目录与安装记录（*.receipt.json）
+installs/         各版本安装目录与安装记录（*.receipt.json；接管的版本只有记录，没有目录）
 shims/            shims
-current/<工具>    指向全局版本的符号链接，方便在 IDE 中配置 JAVA_HOME 等
+current/<工具>    指向全局版本真实目录的符号链接，方便在 IDE 中配置 JAVA_HOME 等
 plugins/          JSON 插件
 cache/downloads/  下载缓存
+cache/detect.json 检测结果缓存
 ```
 
 ## 配置参考
@@ -215,7 +243,6 @@ cache/downloads/  下载缓存
 - Python 版本列表来自 python-build-standalone 最新一次发布，每个小版本系列只提供最新补丁版本（如 3.12.x 只有最新的那一个）。
 - Java 的 `list-all` 列出的是大版本（8、11、17、21…），安装时自动选择该大版本的最新 GA 版；也可以指定完整版本号，在 Adoptium 最近 50 个发布中查找。
 - 国内镜像预设不包含 Java（Adoptium API 无对应镜像），可通过 `mirror_rules` 自行配置。
-- Windows 上接管已有安装需要创建符号链接的权限（开发者模式）；没有权限时会改为记录原路径，功能不受影响。
 - Windows 下的 shims 是 `.cmd` 文件，适用于 cmd / PowerShell；Git Bash 请使用 `runa activate bash`。
 
 ## 许可证
