@@ -189,12 +189,19 @@ function installerPicker(tool) {
   const c = S.installer[tool];
   if (!c) return "";
   const label = (v) => v === "runa" ? "runa 下载" : (PROVIDERS[v] || v);
-  const opts = [["auto", `自动（${label(c.chosen)}）`],
-    ...c.options.map((o) => o.available ? [o.via, label(o.via)] : [`install:${o.via}`, `${label(o.via)} — 安装此管理器…`])];
   const job = S.mgrJob;
-  return `<label class="installer-pick" title="新版本的安装方式：自动时优先使用已检测到的版本管理器，安装后自动登记，卸载也会通过它">安装方式
-    <select class="input" data-installer="${esc(tool)}" style="width:auto;padding:4px 8px" ${job ? "disabled" : ""}>${opts.map(([k, l]) => `<option value="${esc(k)}" ${c.preference === k ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>
+  const chips = [["auto", `自动 · ${label(c.chosen)}`, true], ...c.options.map((o) => [o.via, label(o.via), o.available])];
+  return `<span class="installer-pick">安装方式
+    <span class="seg" role="radiogroup" aria-label="安装方式" title="新版本的安装方式：自动时优先使用已检测到的版本管理器，安装后自动登记，卸载也会通过它">${chips.map(([k, l, ok]) => ok
+      ? `<button role="radio" aria-checked="${c.preference === k}" data-via="${esc(k)}" data-tool="${esc(tool)}" ${job ? "disabled" : ""}>${esc(l)}</button>`
+      : `<button class="is-missing" data-via-install="${esc(k)}" data-tool="${esc(tool)}" title="未安装，点击安装" aria-label="${esc(l)}（未安装，点击安装）" ${job ? "disabled" : ""}>${esc(l)}</button>`).join("")}</span></span>
     ${job ? `<span class="muted mgr-job">${icon("refresh", 12, "spin")}正在安装 ${esc(label(job.name))}${job.line ? "：" + esc(job.line) : "…"}</span>` : ""}`;
+}
+
+async function setInstaller(tool, via) {
+  try { S.installer[tool] = await invoke("set_install_via", { tool, via }); }
+  catch (err) { toast("无法设置安装方式", String(err), "error"); }
+  render();
 }
 
 async function installManager(tool, name) {
@@ -767,6 +774,10 @@ document.addEventListener("click", (e) => {
   if (th) { localStorage.setItem("runa.theme", th.dataset.themeSet); applyTheme(); if (route().name === "settings") render(); return; }
   const tab = e.target.closest("[data-tab]");
   if (tab) { S.tab[tab.dataset.tool] = tab.dataset.tab; return render(); }
+  const via = e.target.closest("[data-via]");
+  if (via) return setInstaller(via.dataset.tool, via.dataset.via);
+  const vi = e.target.closest("[data-via-install]");
+  if (vi) return installManager(vi.dataset.tool, vi.dataset.viaInstall);
   const f = e.target.closest("[data-filter]");
   if (f) { S.filter[f.dataset.tool] = f.dataset.filter; S.pageSize[f.dataset.tool] = 30; return render(); }
   const pm = e.target.closest("[data-proxy-mode]");
@@ -805,18 +816,6 @@ document.addEventListener("keydown", (e) => {
   if (e.target.id === "project") e.target.blur();
 });
 $("#project").addEventListener("change", () => load({ quiet: true }));
-document.addEventListener("change", async (e) => {
-  const tool = e.target?.dataset?.installer;
-  if (!tool) return;
-  if (e.target.value.startsWith("install:")) {
-    const name = e.target.value.slice(8);
-    render(); // put the select back until the manager is installed
-    return installManager(tool, name);
-  }
-  try { S.installer[tool] = await invoke("set_install_via", { tool, via: e.target.value }); }
-  catch (err) { toast("无法设置安装方式", String(err), "error"); }
-  render();
-});
 $("#refresh").addEventListener("click", () => { S.remote = {}; S.usage = null; load({ quiet: true }); });
 
 // ---------------------------------------------------------------- boot
