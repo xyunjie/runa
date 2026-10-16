@@ -391,7 +391,7 @@ function installedList(t) {
       <div class="main-col"><div class="title"><span class="ver">${esc(iv.version)}</span>${badges}</div><div class="meta mono">${esc(meta)}</div></div>
       <div class="actions">
         ${isGlobal || iv.disabled ? "" : `<button class="btn btn-sm" data-act="global" data-tool="${esc(t.tool)}" data-v="${esc(iv.version)}">设为全局</button>`}
-        ${iv.disabled ? "" : `<button class="btn btn-sm" data-act="local" data-tool="${esc(t.tool)}" data-v="${esc(iv.version)}" title="写入 ${esc(projectDir())}/.tool-versions">用于项目</button>`}
+        
         <button class="btn btn-sm" data-act="toggle" data-tool="${esc(t.tool)}" data-v="${esc(iv.version)}" data-disabled="${!!iv.disabled}" title="${iv.disabled ? "重新启用该版本" : "禁用后保留在列表中，但不会被使用"}">${iv.disabled ? "启用" : "禁用"}</button>
         ${iv.provider === "system" ? `<span class="badge" title="系统自带，禁止卸载，防止系统异常">禁止卸载</span><button class="btn btn-sm" data-act="uninstall" data-tool="${esc(t.tool)}" data-v="${esc(iv.version)}" data-adopted="${adopted}" data-system="true" title="只移除 runa 的管理，系统文件不变">移除管理</button>` : `<button class="btn btn-sm btn-icon btn-danger" data-act="uninstall" data-tool="${esc(t.tool)}" data-v="${esc(iv.version)}" data-adopted="${adopted}" data-system="${iv.provider === "system"}" aria-label="${iv.provider === "system" ? "移除管理" : "卸载"} ${esc(iv.version)}" title="${iv.provider === "system" ? "系统自带，禁止卸载（只能移除管理）" : adopted ? "卸载或移除管理" : "卸载"}">${icon("trash", 14)}</button>`}
       </div></div>`;
