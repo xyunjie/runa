@@ -24,7 +24,8 @@ export function ManagersPage() {
           const busy = !!jobs[`mgr:${i.name}`];
           const meta = i.installed
             ? [i.version ? `v${i.version}` : "", `安装方式：${originName(i.origin)}`, `管理 ${i.runtimes.length} 个已登记运行时`].filter(Boolean).join(" · ")
-            : i.install_method ? `可通过 ${originName(i.install_method.method)} 安装` : "当前没有可用的安装方式";
+            : i.install_method ? `可通过 ${originName(i.install_method.method)} 安装`
+            : i.name === "rvm" ? "未检测到；runa 不安装 rvm（推荐 rbenv），已有的 rvm 会被自动识别" : "当前没有可用的安装方式";
           const path = i.data_dir || i.entry || "";
           return (
             <Row key={i.name}>
@@ -53,7 +54,7 @@ export function ManagersPage() {
     );
   return (
     <Page>
-      <PageHead title="版本管理器" sub="nvm、fnm、pyenv、SDKMAN!、asdf、mise 等。通过它们安装的运行时会自动登记，卸载也会经过它们。">
+      <PageHead title="版本管理器" sub="nvm、fnm、pyenv、SDKMAN!、rustup、rbenv、asdf、mise 等。通过它们安装的运行时会自动登记，卸载也会经过它们。">
         <Button onClick={() => setState({ mgrs: null })}><RefreshCw size={14} />刷新</Button>
       </PageHead>
       {Object.keys(jobs).filter((k) => k.startsWith("mgr:")).map((k) => <div key={k} className="mb-6 [&>*]:mt-0"><ProgressCard id={k} /></div>)}

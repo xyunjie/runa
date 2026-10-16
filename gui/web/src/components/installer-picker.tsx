@@ -16,8 +16,10 @@ export function InstallerPicker({ tool }: { tool: string }) {
   const busy = useStore((s) => !!s.jobs[tool]);
   if (!c) return null;
   const managers = c.options.filter((o) => o.via !== "runa");
-  const items = [...managers, { via: "runa", available: true, detail: "" }].filter((o, i, a) => a.findIndex((x) => x.via === o.via) === i);
-  const rec = managers.find((o) => o.available)?.via || "runa";
+  const runa = c.options.find((o) => o.via === "runa") || { via: "runa", available: true, detail: "" };
+  const items = [...managers, runa];
+  // no portable official binary (Ruby, Rust on Windows): the first manager is recommended
+  const rec = managers.find((o) => o.available)?.via || (runa.available ? "runa" : managers[0]?.via || "runa");
   const sel = c.preference === "auto" || !items.some((o) => o.via === c.preference && o.available) ? rec : c.preference;
   return (
     <span className="inline-flex items-center gap-2">
@@ -34,7 +36,11 @@ export function InstallerPicker({ tool }: { tool: string }) {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" aria-label="安装方式" loop>
           {items.map((o) =>
-            o.available ? (
+            o.via === "runa" && !o.available ? (
+              <DropdownMenuItem key={o.via} aria-disabled="true" title={o.detail} className="text-fg-3 opacity-60" onSelect={(e) => e.preventDefault()}>
+                {viaLabel(o.via)}<span className="ml-auto pl-3 text-[11px]">不可用</span>
+              </DropdownMenuItem>
+            ) : o.available ? (
               <DropdownMenuItem key={o.via} aria-checked={o.via === sel} role="menuitemradio" className={cn(o.via === sel && "font-semibold")}
                 onSelect={() => setInstaller(tool, o.via === rec ? "auto" : o.via)}>
                 {viaLabel(o.via)}{o.via === rec && <Tag />}

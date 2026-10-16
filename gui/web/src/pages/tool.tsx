@@ -12,8 +12,9 @@ import { Callout, Dot, EmptyState, Mark, Page } from "@/components/common";
 import { ProgressCard } from "@/components/progress-card";
 import { InstallerPicker } from "@/components/installer-picker";
 import { setIn, useStore } from "@/lib/store";
-import { install, loadInstaller, loadRemote, setGlobal, toggleDisabled, uninstallFlow, unsetLocal, useShortPath } from "@/lib/actions";
+import { install, installManagerFor, loadInstaller, loadRemote, setGlobal, toggleDisabled, uninstallFlow, unsetLocal, useShortPath } from "@/lib/actions";
 import { fileName, fmtBytes } from "@/lib/utils";
+import { providerName } from "@/lib/labels";
 import { ProviderBadge, SourceChip, usageOf } from "./helpers";
 
 export function ToolPage({ name }: { name: string }) {
@@ -145,9 +146,23 @@ function AvailableList({ t }: { t: ToolStatus }) {
   const f = useStore((s) => s.filter[tool] || "all");
   const n = useStore((s) => s.pageSize[tool] || 30);
   const busy = useStore((s) => !!s.jobs[tool]);
+  const choice = useStore((s) => s.installer[tool]);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Ruby (and Rust on Windows) have no portable official binary: a manager is required
+  const runaOpt = choice?.options.find((o) => o.via === "runa");
+  const mgrs = choice?.options.filter((o) => o.via !== "runa") || [];
+  const needManager = !!runaOpt && !runaOpt.available && !mgrs.some((o) => o.available);
+  const offer = mgrs.filter((o) => o.via !== "rvm").slice(0, 2); // runa cannot install rvm
   const search = (
     <>
+      {needManager && (
+        <Callout title={`${t.tool === "ruby" ? "Ruby" : t.tool} 没有可直接下载的官方预编译包`}
+          action={<span className="flex gap-2">{offer.map((o, i) => (
+            <Button key={o.via} size="sm" variant={i === 0 ? "primary" : undefined} disabled={busy} onClick={() => installManagerFor(tool, o.via)}>安装 {providerName(o.via)}</Button>
+          ))}</span>}>
+          推荐先安装 {offer.map((o) => providerName(o.via)).join(" 或 ")}，之后新版本会通过它安装并自动登记。
+        </Callout>
+      )}
       <div className="mb-3 flex items-center gap-2">
         <div className="relative flex flex-1 items-center">
           <Search size={16} strokeWidth={1.75} className="pointer-events-none absolute left-2.5 text-fg-3" />

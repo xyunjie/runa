@@ -28,7 +28,7 @@ export function DetectPage() {
   if (d.status === "idle" || (d.status === "loading" && !d.items.length)) body = <SkeletonRows />;
   else if (d.status === "error") body = <Callout kind="danger" title="检测失败" action={<Button onClick={() => redetect()}>重试</Button>}>{d.error}</Callout>;
   else if (!d.items.length)
-    body = <List><EmptyState icon={CheckCircle2} title="没有发现其它安装" desc="PATH、常见目录以及 nvm / pyenv / SDKMAN! / asdf / fnm / Homebrew 中都没有发现 Node、Java、Python 或 Go。" /></List>;
+    body = <List><EmptyState icon={CheckCircle2} title="没有发现其它安装" desc="PATH、常见目录以及 nvm / pyenv / SDKMAN! / rustup / rbenv / rvm / asdf / mise / fnm / Homebrew 中都没有发现 Node、Java、Python、Go、Rust、Ruby、Bun 或 Deno。" /></List>;
   else
     body = (
       <List>

@@ -7,8 +7,10 @@ const MARKS: Record<string, { label: string; color: string }> = {
   java: { label: "J", color: "#E76F00" },
   python: { label: "Py", color: "#3776AB" },
   go: { label: "Go", color: "#00ADD8" },
-  deno: { label: "D", color: "#70FFAF" },
-  bun: { label: "B", color: "#F472B6" },
+  rust: { label: "Rs", color: "#CE422B" },
+  ruby: { label: "Rb", color: "#CC342D" },
+  bun: { label: "B", color: "#F9A8D4" },
+  deno: { label: "D", color: "#3FB37F" },
 };
 
 /** Tinted monogram badge in the language's brand color. */

@@ -33,6 +33,13 @@ const ov: any = {
       current: { tool: "python", spec: spec("python", ["3.13"], "file", "/home/dev/code/web-app/.tool-versions"), version: "3.13.16", system: false } },
     { tool: "go", description: "Go 工具链（go.dev 官方发行版）", builtin: true, global: null, installed: [],
       current: { tool: "go", spec: spec("go", ["1.27"], "file", "/home/dev/code/web-app/go.mod"), version: null, system: false } },
+    { tool: "rust", description: "Rust 工具链（官方独立安装包；推荐使用 rustup 管理）", builtin: true, global: "1.90.0",
+      installed: [inst("rust", "1.90.0", { source: "adopted", path: "/home/dev/.rustup/toolchains/stable-aarch64-apple-darwin", provider: "rustup" })],
+      current: { tool: "rust", spec: spec("rust", ["1.90.0"], "global", `${H}/.tool-versions`), version: "1.90.0", system: false } },
+    { tool: "ruby", description: "Ruby（官方只提供源码，推荐通过 rbenv / mise 安装）", builtin: true, global: null, installed: [], current: null },
+    { tool: "bun", description: "Bun JavaScript 运行时（GitHub 官方发行版）", builtin: true, global: "1.3.2", installed: [inst("bun", "1.3.2")],
+      current: { tool: "bun", spec: spec("bun", ["1.3.2"], "global", `${H}/.tool-versions`), version: "1.3.2", system: false } },
+    { tool: "deno", description: "Deno JavaScript / TypeScript 运行时（GitHub 官方发行版）", builtin: true, global: null, installed: [], current: null },
   ],
 };
 if (params.get("empty") === "1") ov.tools.forEach((t: any) => { t.installed = []; t.current = null; t.global = null; });
@@ -45,8 +52,12 @@ const remote: Record<string, any[]> = {
   java: [27, 26, 25, 21, 17, 11, 8].map((v) => ({ version: String(v), lts: [25, 21, 17, 11, 8].includes(v), prerelease: false })),
   python: ["3.15.0", "3.14.8", "3.13.16", "3.12.15", "3.11.17"].map((v) => ({ version: v, lts: false, prerelease: false })),
   go: ["1.27.2", "1.27.1", "1.27rc2", "1.26.9"].map((v) => ({ version: v, lts: false, prerelease: v.includes("rc") })),
+  rust: ["1.92.0", "1.91.1", "1.91.0", "1.90.0"].map((v) => ({ version: v, lts: false, prerelease: false })),
+  ruby: ["3.5.0-preview1", "3.4.7", "3.3.9", "3.2.9"].map((v) => ({ version: v, lts: false, prerelease: v.includes("preview") })),
+  bun: ["1.3.3", "1.3.2", "1.2.23"].map((v) => ({ version: v, lts: false, prerelease: false })),
+  deno: ["2.5.6", "2.5.5", "2.4.5"].map((v) => ({ version: v, lts: false, prerelease: false })),
 };
-const sizes: Record<string, number> = { node: 190e6, java: 320e6, python: 120e6, go: 260e6 };
+const sizes: Record<string, number> = { node: 190e6, java: 320e6, python: 120e6, go: 260e6, rust: 680e6, bun: 95e6 };
 const usage = ov.tools.flatMap((t: any) => t.installed.map((i: any) => ({ tool: t.tool, version: i.version, bytes: i.source === "adopted" ? 0 : sizes[t.tool] })));
 
 const detected = () => [
@@ -57,13 +68,21 @@ const detected = () => [
 const choice = (tool: string, preference = ov.settings.install_via[tool] || "auto") => {
   const options = tool === "node"
     ? [{ via: "nvm", available: true, detail: "/home/dev/.nvm" }, { via: "fnm", available: false, detail: "未安装" }, { via: "runa", available: true, detail: "" }]
-    : [{ via: "runa", available: true, detail: "" }];
-  return { tool, preference, chosen: preference === "auto" ? options[0].via : preference, options };
+    : tool === "ruby"
+      ? [{ via: "runa", available: false, detail: "没有可移植的官方预编译包" }, { via: "rbenv", available: false, detail: "未检测到" }, { via: "rvm", available: false, detail: "未检测到" }, { via: "mise", available: false, detail: "未检测到" }, { via: "asdf", available: false, detail: "未检测到" }]
+      : tool === "rust"
+        ? [{ via: "runa", available: true, detail: "" }, { via: "rustup", available: true, detail: "/home/dev/.cargo/bin/rustup" }, { via: "mise", available: false, detail: "未检测到" }]
+        : [{ via: "runa", available: true, detail: "" }];
+  const auto = options.find((o) => o.via !== "runa" && o.available)?.via || (options.find((o) => o.via === "runa")?.available ? "runa" : "auto（不可用）");
+  return { tool, preference, chosen: preference === "auto" ? auto : preference, options };
 };
 const managers = () => [
   { name: "nvm", tools: ["node"], supported: true, installed: true, version: "0.40.3", entry: "/home/dev/.nvm/nvm.sh", data_dir: "/home/dev/.nvm", origin: "script", runtimes: [{ tool: "node", version: "20.19.2", global: false }], install_method: null },
   { name: "fnm", tools: ["node"], supported: true, installed: false, version: null, entry: null, data_dir: null, origin: "-", runtimes: [], install_method: { manager: "fnm", method: "brew", program: "brew", args: [], display: "brew install fnm", rc_note: "", note: "" } },
   { name: "pyenv", tools: ["python"], supported: true, installed: true, version: "2.6.27", entry: "/opt/homebrew/bin/pyenv", data_dir: "/home/dev/.pyenv", origin: "brew", runtimes: [], install_method: null },
+  { name: "rustup", tools: ["rust"], supported: true, installed: true, version: "1.28.2", entry: "/home/dev/.cargo/bin/rustup", data_dir: "/home/dev/.rustup", origin: "script", runtimes: [{ tool: "rust", version: "1.90.0", global: true }], install_method: null },
+  { name: "rbenv", tools: ["ruby"], supported: true, installed: false, version: null, entry: null, data_dir: null, origin: "-", runtimes: [], install_method: { manager: "rbenv", method: "brew", program: "brew", args: ["install", "rbenv", "ruby-build"], display: "brew install rbenv ruby-build", rc_note: "", note: "" } },
+  { name: "rvm", tools: ["ruby"], supported: true, installed: false, version: null, entry: null, data_dir: null, origin: "-", runtimes: [], install_method: null },
   { name: "nvm-windows", tools: ["node"], supported: false, installed: false, version: null, entry: null, data_dir: null, origin: "-", runtimes: [], install_method: null },
 ];
 async function streamLines(name: string, n = 6) {
