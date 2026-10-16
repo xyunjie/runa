@@ -13,6 +13,7 @@ use anyhow::{anyhow, Result};
 ///   current/<tool>        symlink to the global version (best effort)
 ///   plugins/*.json        declarative manifest plugins
 ///   cache/downloads/      downloaded archives
+///   cache/detect.json     detection cache
 /// ```
 #[derive(Debug, Clone)]
 pub struct Paths {
@@ -74,6 +75,10 @@ impl Paths {
     }
     pub fn downloads(&self) -> PathBuf {
         self.root.join("cache").join("downloads")
+    }
+    /// Cached result of `runa detect` (shared by the CLI and the GUI).
+    pub fn detect_cache(&self) -> PathBuf {
+        self.home.join("cache").join("detect.json")
     }
     pub fn settings_file(&self) -> PathBuf {
         self.home.join("settings.json")

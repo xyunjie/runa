@@ -18,7 +18,9 @@ pub mod plugins;
 pub mod project;
 pub mod resolver;
 pub mod settings;
+pub mod storage;
 pub mod toolversions;
+pub mod uninstall;
 pub mod updater;
 pub mod version;
 

@@ -62,6 +62,19 @@ pub struct Receipt {
     pub home: Option<PathBuf>,
     /// Overrides plugin bin dirs (absolute paths).
     pub bin_dirs: Vec<PathBuf>,
+    /// For adopted runtimes: who owns the files (`homebrew`, `nvm`, `pyenv`, `sdkman`,
+    /// `asdf`, `fnm`, `manual`, `system`). `None` for downloads and old receipts.
+    pub provider: Option<String>,
+    /// Homebrew formula name (e.g. `openjdk@17`) when `provider == "homebrew"`.
+    pub formula: Option<String>,
+    /// Disabled versions stay listed but are never resolved, shimmed or put on PATH.
+    pub disabled: bool,
+}
+
+impl Receipt {
+    pub fn is_adopted(&self) -> bool {
+        self.source == "adopted"
+    }
 }
 
 pub fn receipt_path(paths: &Paths, tool: &str, version: &str) -> PathBuf {
@@ -74,10 +87,7 @@ pub fn read_receipt(paths: &Paths, tool: &str, version: &str) -> Option<Receipt>
 }
 
 pub fn write_receipt(paths: &Paths, r: &Receipt) -> Result<()> {
-    let p = receipt_path(paths, &r.tool, &r.version);
-    std::fs::create_dir_all(p.parent().unwrap())?;
-    std::fs::write(p, serde_json::to_string_pretty(r)?)?;
-    Ok(())
+    crate::storage::write_json(&receipt_path(paths, &r.tool, &r.version), r)
 }
 
 pub fn now() -> u64 {
@@ -226,5 +236,18 @@ mod tests {
         assert!(validate_version_name(".hidden").is_err());
         assert!(validate_version_name("a/b").is_err());
         assert!(validate_version_name("").is_err());
+    }
+
+    #[test]
+    fn old_receipts_without_new_fields_still_load() {
+        let old = r#"{"tool":"java","version":"21.0.11","source":"adopted","url":null,
+            "sha256":null,"verified":false,"installed_at":1,"origin":"/usr","home":null,"bin_dirs":[]}"#;
+        let r: Receipt = serde_json::from_str(old).unwrap();
+        assert!(r.is_adopted());
+        assert!(!r.disabled);
+        assert_eq!(r.provider, None);
+        assert_eq!(r.formula, None);
+        let minimal: Receipt = serde_json::from_str(r#"{"tool":"node","version":"20"}"#).unwrap();
+        assert!(!minimal.disabled && minimal.source.is_empty());
     }
 }

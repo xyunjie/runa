@@ -68,8 +68,13 @@ pub struct ToolStatus {
 pub struct InstalledVersion {
     pub version: String,
     pub source: String,
+    /// Runtime root: the install dir, or the real home for registry adoptions.
     pub path: PathBuf,
     pub origin: Option<PathBuf>,
+    /// Owner of an adopted runtime (`homebrew`, `nvm`, ...), see [`crate::detect::classify`].
+    pub provider: Option<String>,
+    pub formula: Option<String>,
+    pub disabled: bool,
 }
 
 impl Manager {
@@ -122,7 +127,10 @@ impl Manager {
         })
     }
 
-    /// Installed versions of `tool`, newest first.
+    /// Installed versions of `tool` (including disabled ones), newest first.
+    ///
+    /// A version is installed when it has an install dir (downloads, legacy symlink
+    /// adoptions) or a registry receipt (adoptions that point at the real home).
     pub fn installed(&self, tool: &str) -> Vec<String> {
         let mut out = Vec::new();
         if let Ok(rd) = std::fs::read_dir(self.paths.tool_dir(tool)) {
@@ -131,7 +139,13 @@ impl Manager {
                 if name.starts_with('.') {
                     continue;
                 }
-                if e.path().is_dir() {
+                if let Some(v) = name.strip_suffix(".receipt.json") {
+                    if !out.iter().any(|o| o == v) && self.is_registry_adoption(tool, v) {
+                        out.push(v.to_string());
+                    }
+                } else if (e.path().is_dir() || std::fs::symlink_metadata(e.path()).is_ok())
+                    && !out.contains(&name)
+                {
                     out.push(name);
                 }
             }
@@ -140,8 +154,81 @@ impl Manager {
         out
     }
 
+    /// Installed versions that are not disabled (what resolution, shims and PATH use).
+    pub fn enabled_versions(&self, tool: &str) -> Vec<String> {
+        self.installed(tool)
+            .into_iter()
+            .filter(|v| !self.is_disabled(tool, v))
+            .collect()
+    }
+
+    fn is_registry_adoption(&self, tool: &str, version: &str) -> bool {
+        self.receipt(tool, version)
+            .map(|r| r.is_adopted() && r.home.is_some())
+            .unwrap_or(false)
+    }
+
     pub fn is_installed(&self, tool: &str, version: &str) -> bool {
-        self.paths.install_dir(tool, version).is_dir()
+        self.paths.install_dir(tool, version).is_dir() || self.is_registry_adoption(tool, version)
+    }
+
+    pub fn is_disabled(&self, tool: &str, version: &str) -> bool {
+        self.receipt(tool, version)
+            .map(|r| r.disabled)
+            .unwrap_or(false)
+    }
+
+    /// Runtime root of an installed version (real home for adoptions).
+    pub fn runtime_root(&self, tool: &str, version: &str) -> PathBuf {
+        self.root_of(tool, version).0
+    }
+
+    /// Enable or disable a version. Returns warnings to show (e.g. it is the global
+    /// version or referenced by `cwd`'s version files).
+    pub fn set_disabled(
+        &self,
+        tool: &str,
+        version: &str,
+        disabled: bool,
+        cwd: &Path,
+    ) -> Result<Vec<String>> {
+        let tool = self.plugin(tool)?.name().to_string();
+        installer::validate_version_name(version)?;
+        if !self.is_installed(&tool, version) {
+            bail!("{tool} {version} 未安装");
+        }
+        let mut r = self.receipt(&tool, version).unwrap_or_else(|| Receipt {
+            tool: tool.clone(),
+            version: version.to_string(),
+            source: "download".into(),
+            installed_at: installer::now(),
+            ..Default::default()
+        });
+        r.disabled = disabled;
+        installer::write_receipt(&self.paths, &r)?;
+        let mut warnings = Vec::new();
+        if disabled {
+            if self.global_version(&tool).as_deref() == Some(version) {
+                warnings.push(format!(
+                    "{tool} {version} 是全局默认版本，禁用后全局将找不到可用的 {tool}"
+                ));
+            }
+            let env = |k: &str| std::env::var(k).ok();
+            if let Some(spec) =
+                resolver::find_spec(&tool, cwd, &env, &self.paths.global_tool_versions())
+            {
+                let hit = spec.specs.iter().any(|s| {
+                    s == version || VersionReq::parse(s).best(std::iter::once(&version.to_string())).is_some()
+                });
+                if hit && !matches!(spec.source, resolver::Source::Global(_)) {
+                    warnings.push(format!(
+                        "当前目录的版本要求（{}）会用到 {tool} {version}，禁用后需要改用其它版本",
+                        spec.source.describe()
+                    ));
+                }
+            }
+        }
+        Ok(warnings)
     }
 
     pub fn receipt(&self, tool: &str, version: &str) -> Option<Receipt> {
@@ -180,7 +267,7 @@ impl Manager {
 
     /// Match a spec against installed versions.
     pub fn match_installed(&self, tool: &str, spec: &str) -> Option<String> {
-        let installed = self.installed(tool);
+        let installed = self.enabled_versions(tool);
         if installed.iter().any(|v| v == spec) {
             return Some(spec.to_string());
         }
@@ -272,23 +359,21 @@ impl Manager {
         self.install(&tool, spec, progress)
     }
 
+    /// Uninstall a downloaded version. Adopted versions need an explicit mode, see
+    /// [`crate::uninstall`].
     pub fn uninstall(&self, tool: &str, version: &str) -> Result<()> {
-        installer::validate_version_name(version)?;
-        let tool = self.plugin(tool)?.name().to_string();
-        let dir = self.paths.install_dir(&tool, version);
-        if std::fs::symlink_metadata(&dir).is_err() {
-            bail!("{tool} {version} 未安装");
-        }
-        // remove_link never follows symlinks, so adopted originals are left untouched
-        platform::remove_link(&dir).with_context(|| format!("删除 {} 失败", dir.display()))?;
-        let _ = std::fs::remove_file(installer::receipt_path(&self.paths, &tool, version));
-        let cur = self.paths.current().join(&tool);
+        let plan = crate::uninstall::plan(self, tool, version, crate::uninstall::Mode::Auto)?;
+        crate::uninstall::execute(self, &plan)
+    }
+
+    /// Drop `current/<tool>` if it points at `root` (after an uninstall).
+    pub(crate) fn clear_current_link_to(&self, tool: &str, roots: &[PathBuf]) {
+        let cur = self.paths.current().join(tool);
         if let Ok(target) = std::fs::read_link(&cur) {
-            if target == dir {
+            if roots.contains(&target) {
                 let _ = platform::remove_link(&cur);
             }
         }
-        Ok(())
     }
 
     /// Write `tool version` to the global `.tool-versions` and update `current/<tool>`.
@@ -312,12 +397,14 @@ impl Manager {
         toolversions::set_in_file(file, tool, None)
     }
 
-    /// `~/.runa/current/<tool>` -> install dir (handy for IDE settings such as JAVA_HOME).
+    /// `~/.runa/current/<tool>` -> runtime root (handy for IDE settings such as JAVA_HOME).
+    /// For adopted versions this points straight at the real home; it is only a
+    /// convenience pointer, nothing in runa resolves through it.
     pub fn update_current_link(&self, tool: &str, version: &str) {
         let link = self.paths.current().join(tool);
         let _ = std::fs::create_dir_all(self.paths.current());
         let _ = platform::remove_link(&link);
-        let target = self.paths.install_dir(tool, version);
+        let target = self.runtime_root(tool, version);
         if target.is_dir() {
             let _ = platform::symlink_dir(&target, &link);
         }
@@ -400,7 +487,7 @@ impl Manager {
     pub fn all_commands(&self) -> Vec<String> {
         let mut names = std::collections::BTreeSet::new();
         for tool in self.registry.names() {
-            for v in self.installed(&tool) {
+            for v in self.enabled_versions(&tool) {
                 for d in self.bin_dirs(&tool, &v) {
                     let Ok(rd) = std::fs::read_dir(&d) else {
                         continue;
@@ -425,7 +512,7 @@ impl Manager {
     pub fn providers_of(&self, exe: &str) -> Vec<(String, String)> {
         let mut out = Vec::new();
         for tool in self.registry.names() {
-            for v in self.installed(&tool) {
+            for v in self.enabled_versions(&tool) {
                 if find_exe_in(&self.bin_dirs(&tool, &v), exe).is_some() {
                     out.push((tool.clone(), v));
                 }
@@ -445,12 +532,19 @@ impl Manager {
                     .into_iter()
                     .map(|v| {
                         let r = self.receipt(&tool, &v);
+                        let adopted = r.as_ref().map(|r| r.is_adopted()).unwrap_or(false);
+                        let home = self.runtime_root(&tool, &v);
                         InstalledVersion {
-                            path: self.paths.install_dir(&tool, &v),
+                            provider: r.as_ref().and_then(|r| r.provider.clone()).or_else(|| {
+                                adopted.then(|| crate::detect::classify(&std::fs::canonicalize(&home).unwrap_or(home.clone())).0)
+                            }),
+                            path: home,
                             source: r
                                 .as_ref()
                                 .map(|r| r.source.clone())
                                 .unwrap_or_else(|| "download".into()),
+                            formula: r.as_ref().and_then(|r| r.formula.clone()),
+                            disabled: r.as_ref().map(|r| r.disabled).unwrap_or(false),
                             origin: r.and_then(|r| r.origin),
                             version: v,
                         }
