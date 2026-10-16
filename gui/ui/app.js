@@ -7,6 +7,7 @@ const invoke = (cmd, args = {}) => T.core.invoke(cmd, args);
 // ---------------------------------------------------------------- state
 const S = {
   installer: {}, // tool -> InstallerChoice from backend
+  viaOpen: null, // tool whose 安装方式 dropdown is open
   mgrJob: null, // {name, line} while a version manager is being installed
   ov: null, // overview from backend
   loading: true,
@@ -189,14 +190,58 @@ function installerPicker(tool) {
   const c = S.installer[tool];
   if (!c) return "";
   const label = (v) => v === "runa" ? "runa 下载" : (PROVIDERS[v] || v);
+  const managers = c.options.filter((o) => o.via !== "runa");
+  const items = [...managers, { via: "runa", available: true }].filter((o, i, a) => a.findIndex((x) => x.via === o.via) === i);
+  const rec = managers.find((o) => o.available)?.via || "runa";
+  const sel = c.preference === "auto" || !items.some((o) => o.via === c.preference && o.available) ? rec : c.preference;
+  const open = S.viaOpen === tool;
   const job = S.mgrJob;
-  const chips = [["auto", `自动 · ${label(c.chosen)}`, true], ...c.options.map((o) => [o.via, label(o.via), o.available])];
+  const tag = (k) => k === rec ? `<span class="badge dd-tag">推荐</span>` : "";
   return `<span class="installer-pick">安装方式
-    <span class="seg" role="radiogroup" aria-label="安装方式" title="新版本的安装方式：自动时优先使用已检测到的版本管理器，安装后自动登记，卸载也会通过它">${chips.map(([k, l, ok]) => ok
-      ? `<button role="radio" aria-checked="${c.preference === k}" data-via="${esc(k)}" data-tool="${esc(tool)}" ${job ? "disabled" : ""}>${esc(l)}</button>`
-      : `<button class="is-missing" data-via-install="${esc(k)}" data-tool="${esc(tool)}" title="未安装，点击安装" aria-label="${esc(l)}（未安装，点击安装）" ${job ? "disabled" : ""}>${esc(l)}</button>`).join("")}</span></span>
+    <span class="dd" data-dd="${esc(tool)}">
+      <button type="button" class="input dd-btn" data-dd-toggle="${esc(tool)}" aria-haspopup="listbox" aria-expanded="${open}" ${job ? "disabled" : ""}
+        title="新版本的安装方式；安装后自动登记，卸载也会通过它">${esc(label(sel))}${tag(sel)}<span class="dd-caret">▾</span></button>
+      ${open ? `<ul class="dd-menu" role="listbox" aria-label="安装方式">${items.map((o) => o.available
+        ? `<li role="option" tabindex="-1" aria-selected="${o.via === sel}" data-dd-item="${esc(o.via)}" data-rec="${o.via === rec}" data-tool="${esc(tool)}">${esc(label(o.via))}${tag(o.via)}</li>`
+        : `<li role="option" tabindex="-1" aria-disabled="true" class="is-missing" title="未安装，点击安装" data-dd-install="${esc(o.via)}" data-tool="${esc(tool)}">${esc(label(o.via))}</li>`).join("")}</ul>` : ""}
+    </span></span>
     ${job ? `<span class="muted mgr-job">${icon("refresh", 12, "spin")}正在安装 ${esc(label(job.name))}${job.line ? "：" + esc(job.line) : "…"}</span>` : ""}`;
 }
+
+function ddOpen(tool) {
+  S.viaOpen = tool;
+  render();
+  const m = document.querySelector(`[data-dd="${CSS.escape(tool)}"] .dd-menu`);
+  (m?.querySelector('[aria-selected="true"]') || m?.querySelector("li"))?.focus();
+}
+function ddClose(focusBtn = true) {
+  const tool = S.viaOpen;
+  if (tool == null) return;
+  S.viaOpen = null;
+  render();
+  if (focusBtn) document.querySelector(`[data-dd-toggle="${CSS.escape(tool)}"]`)?.focus();
+}
+function ddPick(li) {
+  const tool = li.dataset.tool;
+  if (li.dataset.ddInstall) { ddClose(); return installManager(tool, li.dataset.ddInstall); }
+  ddClose();
+  return setInstaller(tool, li.dataset.rec === "true" ? "auto" : li.dataset.ddItem);
+}
+document.addEventListener("keydown", (e) => {
+  const btn = e.target.closest?.("[data-dd-toggle]");
+  if (btn && ["ArrowDown", "ArrowUp"].includes(e.key)) { e.preventDefault(); return ddOpen(btn.dataset.ddToggle); }
+  const li = e.target.closest?.(".dd-menu li");
+  if (!li) { if (e.key === "Escape" && S.viaOpen != null) ddClose(); return; }
+  const all = [...li.parentElement.querySelectorAll("li")];
+  const i = all.indexOf(li);
+  if (e.key === "ArrowDown") { e.preventDefault(); all[Math.min(i + 1, all.length - 1)].focus(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); all[Math.max(i - 1, 0)].focus(); }
+  else if (e.key === "Home") { e.preventDefault(); all[0].focus(); }
+  else if (e.key === "End") { e.preventDefault(); all[all.length - 1].focus(); }
+  else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); ddPick(li); }
+  else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); ddClose(); }
+  else if (e.key === "Tab") ddClose(false);
+});
 
 async function setInstaller(tool, via) {
   try { S.installer[tool] = await invoke("set_install_via", { tool, via }); }
@@ -774,10 +819,11 @@ document.addEventListener("click", (e) => {
   if (th) { localStorage.setItem("runa.theme", th.dataset.themeSet); applyTheme(); if (route().name === "settings") render(); return; }
   const tab = e.target.closest("[data-tab]");
   if (tab) { S.tab[tab.dataset.tool] = tab.dataset.tab; return render(); }
-  const via = e.target.closest("[data-via]");
-  if (via) return setInstaller(via.dataset.tool, via.dataset.via);
-  const vi = e.target.closest("[data-via-install]");
-  if (vi) return installManager(vi.dataset.tool, vi.dataset.viaInstall);
+  const ddt = e.target.closest("[data-dd-toggle]");
+  if (ddt) return S.viaOpen === ddt.dataset.ddToggle ? ddClose() : ddOpen(ddt.dataset.ddToggle);
+  const ddi = e.target.closest(".dd-menu li");
+  if (ddi) return ddPick(ddi);
+  if (S.viaOpen != null && !e.target.closest(".dd")) ddClose(false);
   const f = e.target.closest("[data-filter]");
   if (f) { S.filter[f.dataset.tool] = f.dataset.filter; S.pageSize[f.dataset.tool] = 30; return render(); }
   const pm = e.target.closest("[data-proxy-mode]");
