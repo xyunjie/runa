@@ -52,7 +52,7 @@ fn registry_has_the_new_runtimes() {
     let ruby = m.plugin("ruby").unwrap();
     assert!(!ruby.supports_download(&tgt("macos", "arm64")));
     let rust = m.plugin("rust").unwrap();
-    assert!(rust.supports_download(&tgt("linux", "x64")));
+    assert!(!rust.supports_download(&tgt("linux", "x64")));
     assert!(!rust.supports_download(&tgt("windows", "x64")));
     assert_eq!(
         crate::plugins::bun::asset(&tgt("macos", "arm64")).unwrap(),
@@ -294,10 +294,12 @@ fn installer_preferences() {
     assert!(e.to_string().contains("rbenv / rvm / mise / asdf"), "{e}");
     assert!(managers::choose_for(&p0, "ruby", "runa", false).is_err());
     assert!(managers::choose_for(&p0, "rust", "runa", true).is_err());
-    assert_eq!(
-        managers::choose_for(&p0, "rust", "runa", false).unwrap().0,
-        "runa"
-    );
+    assert!(managers::choose_for(&p0, "rust", "runa", false).is_err());
+    assert!(managers::choose_for(&p0, "rust", "auto", false).is_err());
+    assert!(crate::plugins::deno::has_checksums("2.1.0"));
+    assert!(crate::plugins::deno::has_checksums("2.5.6"));
+    assert!(!crate::plugins::deno::has_checksums("2.0.6"));
+    assert!(!crate::plugins::deno::has_checksums("1.46.3"));
     let c = managers::installer_choice(&p0, "ruby", "auto");
     let runa = c.options.iter().find(|o| o.via == "runa").unwrap();
     assert!(!runa.available);
@@ -658,32 +660,12 @@ fn macos_system_ruby_is_view_only() {
     assert_eq!(detect::guess_home(Path::new("/usr/bin/ruby"), "ruby"), None);
 }
 
-/// The standalone Rust tarball is turned into a plain toolchain dir by its install.sh
-/// (docs skipped); Bun gets its `bunx` alias.
+/// Bun gets its `bunx` alias.
 #[cfg(unix)]
 #[test]
 fn post_extract_layouts() {
     use crate::plugins::Plugin;
     let t = tempfile::tempdir().unwrap();
-    let st = t.path().join("stage");
-    std::fs::create_dir_all(st.join("rustc")).unwrap();
-    std::fs::write(st.join("components"), "rustc\ncargo\nrust-docs\n").unwrap();
-    script(
-        &st.join("install.sh"),
-        r#"#!/bin/sh
-for a in "$@"; do case "$a" in --prefix=*) p="${a#--prefix=}";; --components=*) c="${a#--components=}";; esac; done
-mkdir -p "$p/bin" "$p/lib"; echo "$c" > "$p/lib/components"; touch "$p/bin/rustc"
-"#,
-    );
-    crate::plugins::rust::Rust.post_extract(&st).unwrap();
-    assert!(st.join("bin/rustc").is_file());
-    assert!(!st.join("install.sh").exists() && !st.join("rustc").exists());
-    assert_eq!(
-        std::fs::read_to_string(st.join("lib/components"))
-            .unwrap()
-            .trim(),
-        "rustc,cargo"
-    );
     let b = t.path().join("bun");
     std::fs::create_dir_all(&b).unwrap();
     std::fs::write(b.join("bun"), "").unwrap();

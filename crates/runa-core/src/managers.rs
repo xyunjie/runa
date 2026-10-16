@@ -247,7 +247,8 @@ pub(crate) fn choose_for(
     let download = runa_downloads(tool, windows);
     let no_download = || {
         anyhow!(
-            "runa 不能直接下载 {tool}（没有可移植的官方预编译包），请先安装 {}",
+            "runa 不能直接下载 {tool}（{}），请先安装 {}",
+            no_download_reason(tool),
             cands.join(" / ")
         )
     };
@@ -273,8 +274,16 @@ pub(crate) fn choose_for(
 
 /// Whether runa's own download works for `tool` (no plugin registry needed: the
 /// built-in exceptions are fixed).
-pub fn runa_downloads(tool: &str, windows: bool) -> bool {
-    !(tool == "ruby" || (tool == "rust" && windows))
+pub fn runa_downloads(tool: &str, _windows: bool) -> bool {
+    !(tool == "ruby" || tool == "rust")
+}
+
+fn no_download_reason(tool: &str) -> &'static str {
+    if tool == "rust" {
+        "Rust 只通过 rustup / mise / asdf 安装"
+    } else {
+        "没有可移植的官方预编译包"
+    }
 }
 
 pub fn installer_choice(probe: &Probe, tool: &str, pref: &str) -> InstallerChoice {
@@ -285,7 +294,7 @@ pub fn installer_choice(probe: &Probe, tool: &str, pref: &str) -> InstallerChoic
         detail: if download {
             "runa 直接下载".into()
         } else {
-            "没有可移植的官方预编译包".into()
+            no_download_reason(tool).into()
         },
     }];
     for v in candidates(tool) {

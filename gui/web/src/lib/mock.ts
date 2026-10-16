@@ -33,7 +33,7 @@ const ov: any = {
       current: { tool: "python", spec: spec("python", ["3.13"], "file", "/home/dev/code/web-app/.tool-versions"), version: "3.13.16", system: false } },
     { tool: "go", description: "Go 工具链（go.dev 官方发行版）", builtin: true, global: null, installed: [],
       current: { tool: "go", spec: spec("go", ["1.27"], "file", "/home/dev/code/web-app/go.mod"), version: null, system: false } },
-    { tool: "rust", description: "Rust 工具链（官方独立安装包；推荐使用 rustup 管理）", builtin: true, global: "1.90.0",
+    { tool: "rust", description: "Rust 工具链（通过 rustup / mise / asdf 安装）", builtin: true, global: "1.90.0",
       installed: [inst("rust", "1.90.0", { source: "adopted", path: "/home/dev/.rustup/toolchains/stable-aarch64-apple-darwin", provider: "rustup" })],
       current: { tool: "rust", spec: spec("rust", ["1.90.0"], "global", `${H}/.tool-versions`), version: "1.90.0", system: false } },
     { tool: "ruby", description: "Ruby（官方只提供源码，推荐通过 rbenv / mise 安装）", builtin: true, global: null, installed: [], current: null },
@@ -55,7 +55,7 @@ const remote: Record<string, any[]> = {
   rust: ["1.92.0", "1.91.1", "1.91.0", "1.90.0"].map((v) => ({ version: v, lts: false, prerelease: false })),
   ruby: ["3.5.0-preview1", "3.4.7", "3.3.9", "3.2.9"].map((v) => ({ version: v, lts: false, prerelease: v.includes("preview") })),
   bun: ["1.3.3", "1.3.2", "1.2.23"].map((v) => ({ version: v, lts: false, prerelease: false })),
-  deno: ["2.5.6", "2.5.5", "2.4.5"].map((v) => ({ version: v, lts: false, prerelease: false })),
+  deno: ["2.5.6", "2.5.5", "2.1.0"].map((v) => ({ version: v, lts: false, prerelease: false })),
 };
 const sizes: Record<string, number> = { node: 190e6, java: 320e6, python: 120e6, go: 260e6, rust: 680e6, bun: 95e6 };
 const usage = ov.tools.flatMap((t: any) => t.installed.map((i: any) => ({ tool: t.tool, version: i.version, bytes: i.source === "adopted" ? 0 : sizes[t.tool] })));
@@ -71,7 +71,7 @@ const choice = (tool: string, preference = ov.settings.install_via[tool] || "aut
     : tool === "ruby"
       ? [{ via: "runa", available: false, detail: "没有可移植的官方预编译包" }, { via: "rbenv", available: false, detail: "未检测到" }, { via: "rvm", available: false, detail: "未检测到" }, { via: "mise", available: false, detail: "未检测到" }, { via: "asdf", available: false, detail: "未检测到" }]
       : tool === "rust"
-        ? [{ via: "runa", available: true, detail: "" }, { via: "rustup", available: true, detail: "/home/dev/.cargo/bin/rustup" }, { via: "mise", available: false, detail: "未检测到" }]
+        ? [{ via: "runa", available: false, detail: "runa 不直接下载 Rust" }, { via: "rustup", available: params.get("norustup") !== "1", detail: "/home/dev/.cargo/bin/rustup" }, { via: "mise", available: false, detail: "未检测到" }]
         : [{ via: "runa", available: true, detail: "" }];
   const auto = options.find((o) => o.via !== "runa" && o.available)?.via || (options.find((o) => o.via === "runa")?.available ? "runa" : "auto（不可用）");
   return { tool, preference, chosen: preference === "auto" ? auto : preference, options };

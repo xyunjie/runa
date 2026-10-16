@@ -156,7 +156,7 @@ function AvailableList({ t }: { t: ToolStatus }) {
   const search = (
     <>
       {needManager && (
-        <Callout title={`${t.tool === "ruby" ? "Ruby" : t.tool} 没有可直接下载的官方预编译包`}
+        <Callout title={t.tool === "rust" ? "Rust 需要通过 rustup 等版本管理器安装" : `${t.tool === "ruby" ? "Ruby" : t.tool} 没有可直接下载的官方预编译包`}
           action={<span className="flex gap-2">{offer.map((o, i) => (
             <Button key={o.via} size="sm" variant={i === 0 ? "primary" : undefined} disabled={busy} onClick={() => installManagerFor(tool, o.via)}>安装 {providerName(o.via)}</Button>
           ))}</span>}>
