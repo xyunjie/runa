@@ -163,8 +163,7 @@ async fn install(
         let m = manager()?;
         let mut last = Instant::now() - Duration::from_secs(1);
         let (v, used) = runa_core::managers::install(&m, &tool, &spec, via.as_deref(), &mut |p| {
-            let throttled = matches!(&p, Progress::Downloading { done, total, .. } if !total.map(|t| *done >= t).unwrap_or(false))
-                || matches!(&p, Progress::Output { .. });
+            let throttled = matches!(&p, Progress::Downloading { done, total, .. } if !total.map(|t| *done >= t).unwrap_or(false));
             if throttled && last.elapsed() < Duration::from_millis(120) {
                 return;
             }

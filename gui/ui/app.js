@@ -8,7 +8,6 @@ const invoke = (cmd, args = {}) => T.core.invoke(cmd, args);
 const S = {
   installer: {}, // tool -> InstallerChoice from backend
   viaOpen: null, // tool whose 安装方式 dropdown is open
-  mgrJob: null, // {name, line} while a version manager is being installed
   ov: null, // overview from backend
   loading: true,
   loadError: null,
@@ -195,7 +194,7 @@ function installerPicker(tool) {
   const rec = managers.find((o) => o.available)?.via || "runa";
   const sel = c.preference === "auto" || !items.some((o) => o.via === c.preference && o.available) ? rec : c.preference;
   const open = S.viaOpen === tool;
-  const job = S.mgrJob;
+  const job = S.jobs[tool];
   const tag = (k) => k === rec ? `<span class="badge dd-tag">推荐</span>` : "";
   return `<span class="installer-pick">安装方式
     <span class="dd" data-dd="${esc(tool)}">
@@ -205,7 +204,7 @@ function installerPicker(tool) {
         ? `<li role="option" tabindex="-1" aria-selected="${o.via === sel}" data-dd-item="${esc(o.via)}" data-rec="${o.via === rec}" data-tool="${esc(tool)}">${esc(label(o.via))}${tag(o.via)}</li>`
         : `<li role="option" tabindex="-1" aria-disabled="true" class="is-missing" title="未安装，点击安装" data-dd-install="${esc(o.via)}" data-tool="${esc(tool)}">${esc(label(o.via))}</li>`).join("")}</ul>` : ""}
     </span></span>
-    ${job ? `<span class="muted mgr-job">${icon("refresh", 12, "spin")}正在安装 ${esc(label(job.name))}${job.line ? "：" + esc(job.line) : "…"}</span>` : ""}`;
+`;
 }
 
 function ddOpen(tool) {
@@ -256,24 +255,25 @@ async function installManager(tool, name) {
   const body = `将执行以下命令（不会使用 sudo）：<br><code class="mono" style="display:block;white-space:pre-wrap;margin:8px 0">${esc(plan.display)}</code>
     ${plan.rc_note ? `<b>会修改：</b>${esc(plan.rc_note)}` : "不会修改 shell 配置文件。"}${plan.note ? `<br><span class="muted">${esc(plan.note)}</span>` : ""}`;
   if (!(await confirmDialog({ title: `安装 ${PROVIDERS[name] || name}`, body, ok: "安装" }))) return;
-  S.mgrJob = { name, line: "" };
+  if (S.jobs[tool]) return;
+  // same progress card as runtime installs (indeterminate bar, step, latest output)
+  S.jobs[tool] = { mgr: name, stage: "manager", via: PROVIDERS[name] || name, command: plan.display };
   render();
   try {
     S.installer[tool] = await invoke("install_manager", { name, tool });
     toast(`${PROVIDERS[name] || name} 已安装`, `已设为 ${tool} 的安装方式，现在可以通过它安装新版本`);
   } catch (e) {
-    toast(`安装 ${name} 失败`, String(e), "error");
+    toast(`安装 ${PROVIDERS[name] || name} 失败`, String(e), "error");
   } finally {
-    S.mgrJob = null;
+    delete S.jobs[tool];
     render();
   }
 }
 
 function onManagerProgress(p) {
-  if (!S.mgrJob || S.mgrJob.name !== p.name) return;
-  S.mgrJob.line = p.line;
-  const el = document.querySelector(".mgr-job");
-  if (el) el.innerHTML = `${icon("refresh", 12, "spin")}正在安装 ${esc(PROVIDERS[p.name] || p.name)}：${esc(p.line)}`;
+  const tool = Object.keys(S.jobs).find((t) => S.jobs[t].mgr === p.name);
+  if (!tool) return;
+  onProgress({ stage: "output", tool, line: p.line });
 }
 
 async function loadRemote(tool, force = false) {
@@ -446,7 +446,7 @@ function jobCard(tool) {
   const indet = j.stage !== "downloading" || pct == null;
   const stageText = { resolving: "正在解析版本…", downloading: "正在下载", verifying: "正在校验 SHA256…", extracting: "正在解压…", manager: `通过 ${j.via || "版本管理器"} 安装：${j.command || ""}`, output: `通过 ${j.via || "版本管理器"} 安装：${j.line || ""}`, done: "完成" }[j.stage] || "准备中…";
   return `<div class="card progress-card" role="status" aria-live="polite">
-    <div class="progress-top"><div class="t">${icon("refresh", 14, "spin")}安装 ${esc(tool)} ${esc(j.version || j.spec || "")}</div>
+    <div class="progress-top"><div class="t">${icon("refresh", 14, "spin")}安装 ${j.mgr ? esc(j.via) : `${esc(tool)} ${esc(j.version || j.spec || "")}`}</div>
       <div class="n">${pct != null && j.stage === "downloading" ? pct + "%" : ""}</div></div>
     <div class="bar ${indet ? "indeterminate" : ""}"><i style="width:${indet ? "" : pct + "%"}"></i></div>
     <div class="progress-meta"><span>${stageText}</span>
