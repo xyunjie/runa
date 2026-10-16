@@ -271,6 +271,22 @@ enum Cmd {
 enum ManagerCmd {
     /// 列出各版本管理器在当前平台的状态和安装方式
     List,
+    /// 升级版本管理器（按其安装方式：brew upgrade / winget upgrade / scoop update / 官方方式）
+    Upgrade {
+        name: String,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// 卸载版本管理器及其管理的运行时（按其安装方式；会移除安装脚本写入的 shell 配置行）
+    Uninstall {
+        name: String,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
     /// 安装一个版本管理器（会先显示将执行的命令并确认）
     Install {
         name: String,
@@ -1071,12 +1087,108 @@ fn uninstall_cmd(
     Ok(0)
 }
 
+fn confirm() -> Result<bool> {
+    use std::io::{IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        bail!("非交互环境，请加 --yes 确认");
+    }
+    eprint!("继续？[y/N] ");
+    std::io::stderr().flush().ok();
+    let mut a = String::new();
+    std::io::stdin().read_line(&mut a)?;
+    Ok(matches!(a.trim(), "y" | "Y" | "yes"))
+}
+
 fn manager_cmd(m: &Manager, cmd: ManagerCmd) -> Result<i32> {
     use runa_core::{bootstrap, managers::Probe};
     let probe = Probe::current(m);
+    let cmd_kind = match &cmd {
+        ManagerCmd::Upgrade { .. } => "upgrade",
+        _ => "other",
+    };
     match cmd {
+        ManagerCmd::Upgrade { name, dry_run, yes }
+        | ManagerCmd::Uninstall { name, dry_run, yes } => {
+            use runa_core::manager_admin::{self, PlanKind};
+            let action = if matches!(cmd_kind, "upgrade") {
+                "upgrade"
+            } else {
+                "uninstall"
+            };
+            let p = manager_admin::plan(m, &probe, &name.to_ascii_lowercase(), action)?;
+            println!("{}", p.summary);
+            if let Some(c) = &p.command_line {
+                println!("  命令: {c}");
+            }
+            for d in &p.remove_dirs {
+                println!("  删除: {}", d.display());
+            }
+            for e in &p.rc_edits {
+                println!("  从 {} 移除:", e.file.display());
+                for (n, l) in &e.lines {
+                    println!("    {n}: {l}");
+                }
+            }
+            if !p.runtimes.is_empty() {
+                println!("  以下运行时也会被删除并取消登记:");
+                for r in &p.runtimes {
+                    println!(
+                        "    {} {}{}",
+                        r.tool,
+                        r.version,
+                        if r.global { "（runa 全局）" } else { "" }
+                    );
+                }
+            }
+            if p.kind == PlanKind::Refuse {
+                return Ok(1);
+            }
+            if dry_run {
+                return Ok(0);
+            }
+            if !yes && !confirm()? {
+                eprintln!("已取消");
+                return Ok(1);
+            }
+            let rep = manager_admin::execute(m, &probe, &p, &mut |l| eprintln!("  │ {l}"))?;
+            for n in &rep.notices {
+                eprintln!("! {n}");
+            }
+            reshim_quiet(m);
+            eprintln!(
+                "✓ 已{} {}",
+                if action == "upgrade" {
+                    "升级"
+                } else {
+                    "卸载"
+                },
+                p.manager
+            );
+            Ok(0)
+        }
         ManagerCmd::List => {
-            for st in bootstrap::status(&probe) {
+            let infos = runa_core::manager_admin::info(m, &probe);
+            for i in &infos {
+                if !i.installed {
+                    continue;
+                }
+                println!(
+                    "{:<12} 已安装  版本 {:<10} 方式 {:<7} 运行时 {:<3} {}",
+                    i.name,
+                    i.version.as_deref().unwrap_or("?"),
+                    i.origin,
+                    i.runtimes.len(),
+                    i.data_dir
+                        .as_deref()
+                        .or(i.entry.as_deref())
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default()
+                );
+            }
+            for st in bootstrap::status(&probe)
+                .into_iter()
+                .filter(|s| !infos.iter().any(|i| i.installed && i.name == s.name))
+            {
                 let state = match (st.supported, st.installed) {
                     (false, _) => "不支持此平台".to_string(),
                     (true, true) => "已安装".to_string(),
