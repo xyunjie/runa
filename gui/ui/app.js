@@ -100,7 +100,7 @@ function confirmDialog({ title, body, ok = "确定", danger = false }) {
   });
 }
 
-const PROVIDERS = { homebrew: "Homebrew", nvm: "nvm", pyenv: "pyenv", sdkman: "SDKMAN!", asdf: "asdf", fnm: "fnm", manual: "手动安装", system: "系统自带" };
+const PROVIDERS = { homebrew: "Homebrew", nvm: "nvm", pyenv: "pyenv", sdkman: "SDKMAN!", asdf: "asdf", fnm: "fnm", manual: "手动安装", system: "系统自带", "nvm-windows": "nvm-windows", "pyenv-win": "pyenv-win", mise: "mise", scoop: "Scoop", "scoop-global": "Scoop（全局）", winget: "winget", chocolatey: "Chocolatey", installer: "安装程序" };
 const providerBadge = (p, formula) => p ? `<span class="badge" title="${esc(formula ? `${p}: ${formula}` : p)}">${esc(PROVIDERS[p] || p)}${formula ? ` · <span class="mono">${esc(formula)}</span>` : ""}</span>` : "";
 const ago = (secs) => {
   if (!secs) return "";
@@ -378,7 +378,7 @@ function installedList(t) {
         ${isGlobal || iv.disabled ? "" : `<button class="btn btn-sm" data-act="global" data-tool="${esc(t.tool)}" data-v="${esc(iv.version)}">设为全局</button>`}
         ${iv.disabled ? "" : `<button class="btn btn-sm" data-act="local" data-tool="${esc(t.tool)}" data-v="${esc(iv.version)}" title="写入 ${esc(projectDir())}/.tool-versions">用于项目</button>`}
         <button class="btn btn-sm" data-act="toggle" data-tool="${esc(t.tool)}" data-v="${esc(iv.version)}" data-disabled="${!!iv.disabled}" title="${iv.disabled ? "重新启用该版本" : "禁用后保留在列表中，但不会被使用"}">${iv.disabled ? "启用" : "禁用"}</button>
-        <button class="btn btn-sm btn-icon btn-danger" data-act="uninstall" data-tool="${esc(t.tool)}" data-v="${esc(iv.version)}" data-adopted="${adopted}" aria-label="卸载 ${esc(iv.version)}" title="${adopted ? "卸载或移除管理" : "卸载"}">${icon("trash", 14)}</button>
+        <button class="btn btn-sm btn-icon btn-danger" data-act="uninstall" data-tool="${esc(t.tool)}" data-v="${esc(iv.version)}" data-adopted="${adopted}" data-system="${iv.provider === "system"}" aria-label="${iv.provider === "system" ? "移除管理" : "卸载"} ${esc(iv.version)}" title="${iv.provider === "system" ? "系统自带，禁止卸载（只能移除管理）" : adopted ? "卸载或移除管理" : "卸载"}">${icon("trash", 14)}</button>
       </div></div>`;
   }).join("")}</div>
   ${cur && cur.spec.source.kind === "file" && fileName(cur.spec.source.detail) === ".tool-versions" ? `<div class="hint-line" style="margin-top:12px">${icon("info", 13)}项目版本来自 <span class="mono">${esc(shortPath(cur.spec.source.detail))}</span><button class="btn btn-ghost btn-sm" data-act="unset-local" data-tool="${esc(t.tool)}">移除项目设置</button></div>` : ""}`;
@@ -594,18 +594,24 @@ async function onAction(btn) {
       return load({ quiet: true });
     case "uninstall": {
       const adopted = btn.dataset.adopted === "true";
+      const system = btn.dataset.system === "true";
       const plans = {};
       const getPlan = async (mode) => (plans[mode] ??= await invoke("uninstall_plan", { tool, version: v, mode }));
       const mode = await choiceDialog(adopted ? {
-        title: `卸载 ${tool} ${v}`,
-        intro: "这是接管的版本，请选择处理方式。",
-        options: [
+        title: system ? `移除管理 ${tool} ${v}` : `卸载 ${tool} ${v}`,
+        intro: system ? "系统自带，禁止卸载。只能移除 runa 的管理（或禁用该版本），系统文件保持不变。" : "这是接管的版本，请选择处理方式。",
+        options: system ? [
           { key: "forget", title: "只移除管理", desc: "删除 runa 中的记录，原有安装和文件保持不变。" },
-          { key: "purge", title: "彻底卸载", desc: "通过它所属的工具（Homebrew、nvm 等）卸载，或删除安装目录。" },
+        ] : [
+          { key: "forget", title: "只移除管理", desc: "删除 runa 中的记录，原有安装和文件保持不变。" },
+          { key: "purge", title: "彻底卸载", desc: "通过它所属的工具（Homebrew、nvm、scoop、winget 等）卸载，或删除安装目录。" },
         ],
         initial: "forget",
         describe: async (m) => {
-          const p = await getPlan(m);
+          let p;
+          try { p = await getPlan(m); } catch (e) {
+            return { html: `<p class="hint">${esc(String(e))}</p>`, okDisabled: true, danger: false, okLabel: "禁止卸载" };
+          }
           const blocked = p.kind === "refuse" || p.needs_root;
           return { html: planHtml(p), okDisabled: p.kind === "refuse", danger: m === "purge", okLabel: m === "forget" ? "移除管理" : blocked ? "我已了解" : "彻底卸载" };
         },
