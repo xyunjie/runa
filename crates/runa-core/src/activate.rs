@@ -442,7 +442,7 @@ pub fn add_shims_to_user_path(m: &Manager) -> Result<bool> {
         if !st.success() {
             bail!("更新用户 PATH 失败");
         }
-        return Ok(true);
+        Ok(true)
     }
     #[cfg(not(windows))]
     {
