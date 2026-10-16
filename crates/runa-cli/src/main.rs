@@ -36,6 +36,10 @@ enum Cmd {
         /// 上游没有提供 SHA256 时拒绝安装（也可设置 RUNA_REQUIRE_CHECKSUM=1）
         #[arg(long)]
         require_checksum: bool,
+        /// 安装方式：auto（默认，优先用已检测到的 nvm / fnm / pyenv / sdkman / asdf / mise）、
+        /// runa（直接下载）或指定管理器名
+        #[arg(long)]
+        via: Option<String>,
     },
     /// 卸载某个已安装版本；接管的版本需选择 --forget（只移除管理）或 --purge（彻底卸载）
     #[command(
@@ -139,6 +143,11 @@ enum Cmd {
     },
     /// 查看或设置下载镜像：runa mirror [off|cn]
     Mirror { mode: Option<String> },
+    /// 查看或设置新版本的安装方式偏好，如 `runa installer node nvm`、`runa installer python runa`、`runa installer node auto`
+    Installer {
+        tool: Option<String>,
+        via: Option<String>,
+    },
     /// 查看或设置代理：runa proxy [off|system|http://..|socks5://..]
     Proxy { value: Option<String> },
     /// 一键把激活脚本写入 shell 配置文件
@@ -335,6 +344,8 @@ impl Bar {
             Progress::Extracting { .. } => eprintln!("  解压中 …"),
             Progress::Done { tool, version } => eprintln!("✓ {tool} {version} 已就绪"),
             Progress::Warning { message } => eprintln!("  ! {message}"),
+            Progress::Manager { via, command, .. } => eprintln!("→ 通过 {via} 安装: {command}"),
+            Progress::Output { line, .. } => eprintln!("  │ {line}"),
         }
     }
 }
@@ -383,6 +394,7 @@ fn run(cli: Cli) -> Result<i32> {
         Cmd::Install {
             tool: None,
             require_checksum,
+            via,
             ..
         } => {
             m.require_checksum = require_checksum;
@@ -392,7 +404,7 @@ fn run(cli: Cli) -> Result<i32> {
                     any = true;
                     let mut bar = Bar::new();
                     let spec = r.wanted().to_string();
-                    m.install(&r.tool, &spec, &mut |p| bar.handle(p))?;
+                    install_new(&m, &r.tool, &spec, via.as_deref(), &mut bar)?;
                 }
             }
             if !any {
@@ -404,6 +416,7 @@ fn run(cli: Cli) -> Result<i32> {
             tool: Some(tool),
             version,
             require_checksum,
+            via,
         } => {
             m.require_checksum = require_checksum;
             let (tool, version) = split_tool(&tool, version);
@@ -415,7 +428,7 @@ fn run(cli: Cli) -> Result<i32> {
                     .unwrap_or_else(|| "latest".into()),
             };
             let mut bar = Bar::new();
-            let v = m.install(&tool, &spec, &mut |p| bar.handle(p))?;
+            let v = install_new(&m, &tool, &spec, via.as_deref(), &mut bar)?;
             reshim_quiet(&m);
             if m.global_version(&tool).is_none() {
                 m.set_global(&tool, &v)?;
@@ -736,6 +749,48 @@ fn run(cli: Cli) -> Result<i32> {
             }
             reshim_quiet(&m);
         }
+        Cmd::Installer { tool, via } => {
+            use runa_core::managers;
+            if let (Some(t), Some(v)) = (&tool, &via) {
+                let t = m.plugin(t)?.name().to_string();
+                if v != "auto" && v != "runa" {
+                    managers::choose(&managers::Probe::current(&m), &t, v)?;
+                }
+                m.settings.set_install_via(&t, v)?;
+                m.save_settings()?;
+                eprintln!("✓ {t} 的安装方式已设置为 {}", m.settings.install_via(&t));
+            }
+            let probe = managers::Probe::current(&m);
+            let tools = match &tool {
+                Some(t) => vec![m.plugin(t)?.name().to_string()],
+                None => m.registry.names(),
+            };
+            for t in tools {
+                let c = managers::installer_choice(&probe, &t, m.settings.install_via(&t));
+                let alts: Vec<String> = c
+                    .options
+                    .iter()
+                    .map(|o| {
+                        format!(
+                            "{}{}",
+                            o.via,
+                            if o.available {
+                                ""
+                            } else {
+                                "（未检测到）"
+                            }
+                        )
+                    })
+                    .collect();
+                println!(
+                    "{:<7} 将使用 {:<12} 偏好 {:<8} 可选: {}",
+                    t,
+                    c.chosen,
+                    c.preference,
+                    alts.join(" ")
+                );
+            }
+        }
         Cmd::Mirror { mode } => {
             if let Some(mode) = mode {
                 m.settings.set_mirror(&mode)?;
@@ -989,6 +1044,22 @@ fn uninstall_cmd(
         }
     );
     Ok(0)
+}
+
+/// Install a new version through the chosen installer (version manager or runa), with
+/// manager output streamed to the terminal.
+pub(crate) fn install_new(
+    m: &Manager,
+    tool: &str,
+    spec: &str,
+    via: Option<&str>,
+    bar: &mut Bar,
+) -> Result<String> {
+    let (v, used) = runa_core::managers::install(m, tool, spec, via, &mut |p| bar.handle(p))?;
+    if used != "runa" {
+        eprintln!("✓ 已通过 {used} 安装并登记 {tool} {v}（卸载时也会通过 {used}）");
+    }
+    Ok(v)
 }
 
 pub(crate) fn reshim_quiet(m: &Manager) {
