@@ -16,7 +16,8 @@ const S = {
   filter: {}, // tool -> all | lts | stable
   pageSize: {}, // tool -> n shown
   jobs: {}, // tool -> progress info
-  detected: { status: "idle", items: [], error: null },
+  detected: { status: "idle", items: [], error: null, createdAt: 0, refreshing: false },
+  migration: [], // pending legacy (symlink) adoptions, from a dry-run
   proxyDraft: null,
   proxyError: null,
 };
@@ -97,6 +98,63 @@ function confirmDialog({ title, body, ok = "确定", danger = false }) {
     root.querySelectorAll("[data-r]").forEach((b) => (b.onclick = () => done(b.dataset.r === "1")));
     root.querySelector('[data-r="0"]').focus();
   });
+}
+
+const PROVIDERS = { homebrew: "Homebrew", nvm: "nvm", pyenv: "pyenv", sdkman: "SDKMAN!", asdf: "asdf", fnm: "fnm", manual: "手动安装", system: "系统自带" };
+const providerBadge = (p, formula) => p ? `<span class="badge" title="${esc(formula ? `${p}: ${formula}` : p)}">${esc(PROVIDERS[p] || p)}${formula ? ` · <span class="mono">${esc(formula)}</span>` : ""}</span>` : "";
+const ago = (secs) => {
+  if (!secs) return "";
+  const d = Math.max(0, Date.now() / 1000 - secs);
+  return d < 60 ? "刚刚" : d < 3600 ? `${Math.floor(d / 60)} 分钟前` : d < 86400 ? `${Math.floor(d / 3600)} 小时前` : `${Math.floor(d / 86400)} 天前`;
+};
+
+/** Generic dialog: options = [{key, title, desc}], onPick(key) -> {html, okDisabled, okLabel, danger} */
+function choiceDialog({ title, intro = "", options = [], initial, describe }) {
+  return new Promise((resolve) => {
+    const root = $("#modal-root");
+    const prev = document.activeElement;
+    let cur = initial ?? options[0]?.key ?? null;
+    let seq = 0;
+    root.innerHTML = `<div class="backdrop"><div class="dialog wide" role="alertdialog" aria-modal="true" aria-labelledby="dlg-t">
+      <h3 id="dlg-t">${esc(title)}</h3>${intro ? `<p>${intro}</p>` : ""}
+      ${options.length ? `<div class="options">${options.map((o) => `<label class="option" data-opt="${esc(o.key)}"><input type="radio" name="dlg-opt" value="${esc(o.key)}"/><span class="radio"></span><div><div class="t">${esc(o.title)}</div><div class="d">${esc(o.desc)}</div></div></label>`).join("")}</div>` : ""}
+      <div class="dlg-detail"></div>
+      <div class="row"><button class="btn" data-r="0">取消</button><button class="btn" data-r="1">确定</button></div></div></div>`;
+    const okBtn = root.querySelector('[data-r="1"]');
+    const paint = async () => {
+      root.querySelectorAll("[data-opt]").forEach((el) => {
+        el.classList.toggle("selected", el.dataset.opt === cur);
+        el.querySelector("input").checked = el.dataset.opt === cur;
+      });
+      const my = ++seq;
+      okBtn.disabled = true;
+      root.querySelector(".dlg-detail").innerHTML = `<div class="plan-box"><span class="skel" style="display:block;width:70%;height:10px"></span></div>`;
+      const d = await describe(cur).catch((e) => ({ html: `<div class="plan-box danger">${esc(String(e))}</div>`, okDisabled: true }));
+      if (my !== seq) return;
+      root.querySelector(".dlg-detail").innerHTML = d.html || "";
+      okBtn.textContent = d.okLabel || "确定";
+      okBtn.className = `btn ${d.danger ? "btn-danger-solid" : "btn-primary"}`;
+      okBtn.disabled = !!d.okDisabled;
+    };
+    const done = (v) => { root.innerHTML = ""; document.removeEventListener("keydown", onKey); prev?.focus?.(); resolve(v); };
+    const onKey = (e) => { if (e.key === "Escape") done(null); };
+    document.addEventListener("keydown", onKey);
+    root.querySelector(".backdrop").addEventListener("mousedown", (e) => { if (e.target.classList.contains("backdrop")) done(null); });
+    root.querySelectorAll("[data-opt]").forEach((el) => el.addEventListener("click", (e) => { e.preventDefault(); if (cur !== el.dataset.opt) { cur = el.dataset.opt; paint(); } }));
+    root.querySelector('[data-r="0"]').onclick = () => done(null);
+    okBtn.onclick = () => done(cur ?? true);
+    root.querySelector('[data-r="0"]').focus();
+    paint();
+  });
+}
+
+function planHtml(p) {
+  const rows = [];
+  rows.push(`<div class="lbl">${esc(p.summary)}</div>`);
+  if (p.command_line) rows.push(`<div class="lbl">${p.needs_root ? "需要管理员权限，runa 不会自动 sudo，请在终端手动执行：" : "将执行命令："}</div><span class="mono">${esc(p.command_line)}</span>`);
+  if (p.paths?.length) rows.push(`<div class="lbl">${p.kind === "forget" ? "将删除的 runa 记录：" : "将删除："}</div>${p.paths.map((x) => `<span class="mono">${esc(shortPath(x))}</span>`).join("")}`);
+  if (p.kind === "forget" && p.home) rows.push(`<div class="lbl">保留原有安装：</div><span class="mono">${esc(shortPath(p.home))}</span>`);
+  return `<div class="plan-box ${p.kind === "forget" ? "" : "danger"}">${rows.join("")}</div>`;
 }
 
 // ---------------------------------------------------------------- data
@@ -308,16 +366,19 @@ function installedList(t) {
     const isGlobal = t.global === iv.version;
     const isLocal = isCur && cur.spec.source.kind === "file";
     const size = usageOf(t.tool, iv.version);
+    const adopted = iv.source === "adopted";
     const badges = [isCur ? `<span class="badge accent">当前</span>` : "", isGlobal ? `<span class="badge">全局</span>` : "",
-      isLocal ? `<span class="badge">项目</span>` : "", iv.source === "adopted" ? `<span class="badge warn" title="${esc(iv.origin)}">${icon("link", 11)}已接管</span>` : ""].join("");
-    const meta = iv.source === "adopted" ? `链接到 ${shortPath(iv.origin)}` : `${shortPath(iv.path)}${S.usage ? " · " + fmtBytes(size) : ""}`;
-    return `<div class="item">
+      isLocal ? `<span class="badge">项目</span>` : "", adopted ? `<span class="badge warn" title="${esc(iv.path)}">${icon("link", 11)}已接管</span>` : "",
+      adopted ? providerBadge(iv.provider, iv.formula) : "", iv.disabled ? `<span class="badge">已禁用</span>` : ""].join("");
+    const meta = adopted ? `位于 ${shortPath(iv.path)}` : `${shortPath(iv.path)}${S.usage ? " · " + fmtBytes(size) : ""}`;
+    return `<div class="item ${iv.disabled ? "is-disabled" : ""}">
       <span class="dot ${isCur ? "ok" : ""}"></span>
       <div class="main-col"><div class="title"><span class="ver">${esc(iv.version)}</span>${badges}</div><div class="meta mono">${esc(meta)}</div></div>
       <div class="actions">
-        ${isGlobal ? "" : `<button class="btn btn-sm" data-act="global" data-tool="${esc(t.tool)}" data-v="${esc(iv.version)}">设为全局</button>`}
-        <button class="btn btn-sm" data-act="local" data-tool="${esc(t.tool)}" data-v="${esc(iv.version)}" title="写入 ${esc(projectDir())}/.tool-versions">用于项目</button>
-        <button class="btn btn-sm btn-icon btn-danger" data-act="uninstall" data-tool="${esc(t.tool)}" data-v="${esc(iv.version)}" data-adopted="${iv.source === "adopted"}" aria-label="${iv.source === "adopted" ? "取消接管" : "卸载"} ${esc(iv.version)}" title="${iv.source === "adopted" ? "取消接管" : "卸载"}">${icon("trash", 14)}</button>
+        ${isGlobal || iv.disabled ? "" : `<button class="btn btn-sm" data-act="global" data-tool="${esc(t.tool)}" data-v="${esc(iv.version)}">设为全局</button>`}
+        ${iv.disabled ? "" : `<button class="btn btn-sm" data-act="local" data-tool="${esc(t.tool)}" data-v="${esc(iv.version)}" title="写入 ${esc(projectDir())}/.tool-versions">用于项目</button>`}
+        <button class="btn btn-sm" data-act="toggle" data-tool="${esc(t.tool)}" data-v="${esc(iv.version)}" data-disabled="${!!iv.disabled}" title="${iv.disabled ? "重新启用该版本" : "禁用后保留在列表中，但不会被使用"}">${iv.disabled ? "启用" : "禁用"}</button>
+        <button class="btn btn-sm btn-icon btn-danger" data-act="uninstall" data-tool="${esc(t.tool)}" data-v="${esc(iv.version)}" data-adopted="${adopted}" aria-label="卸载 ${esc(iv.version)}" title="${adopted ? "卸载或移除管理" : "卸载"}">${icon("trash", 14)}</button>
       </div></div>`;
   }).join("")}</div>
   ${cur && cur.spec.source.kind === "file" && fileName(cur.spec.source.detail) === ".tool-versions" ? `<div class="hint-line" style="margin-top:12px">${icon("info", 13)}项目版本来自 <span class="mono">${esc(shortPath(cur.spec.source.detail))}</span><button class="btn btn-ghost btn-sm" data-act="unset-local" data-tool="${esc(t.tool)}">移除项目设置</button></div>` : ""}`;
@@ -369,24 +430,52 @@ function availableList(t) {
 function pageDetect() {
   const d = S.detected;
   let body;
-  if (d.status === "idle")
-    body = `<div class="list">${emptyState("scan", "扫描本机已有的运行时", "检查 PATH、JAVA_HOME、GOROOT 以及常见安装目录。",
-      `<button class="btn btn-primary" data-act="detect">${icon("scan", 14)}开始检测</button>`)}</div>`;
-  else if (d.status === "loading")
+  if (d.status === "idle" || (d.status === "loading" && !d.items.length))
     body = `<div class="list">${[1, 2, 3].map(() => `<div class="item"><span class="skel" style="width:32px;height:32px;border-radius:8px"></span><div class="main-col"><div class="skel" style="width:120px;height:11px"></div><div class="skel" style="width:220px;height:9px;margin-top:8px"></div></div></div>`).join("")}</div>`;
   else if (d.status === "error")
     body = `<div class="callout danger"><span data-icon="alert"></span><div class="grow"><div class="t">检测失败</div><div class="d">${esc(d.error)}</div></div><button class="btn" data-act="detect">重试</button></div>`;
-  else if (!d.items.length) body = `<div class="list">${emptyState("checkCircle", "没有发现其它安装", "本机 PATH 中没有可接管的 Node、Java、Python 或 Go。")}</div>`;
+  else if (!d.items.length) body = `<div class="list">${emptyState("checkCircle", "没有发现其它安装", "PATH、常见目录以及 nvm / pyenv / SDKMAN! / asdf / fnm / Homebrew 中都没有发现 Node、Java、Python 或 Go。")}</div>`;
   else
-    body = `<div class="list">${d.items.map((x, i) => `<div class="item">${mark(x.tool, 32)}
-      <div class="main-col"><div class="title">${esc(x.tool)} <span class="ver">${esc(x.version)}</span></div><div class="meta mono">${esc(x.exe)}</div></div>
+    body = `<div class="list">${d.items.map((x, i) => `<div class="item ${x.disabled ? "is-disabled" : ""}">${mark(x.tool, 32)}
+      <div class="main-col"><div class="title">${esc(x.tool)} <span class="ver">${esc(x.version)}</span>${providerBadge(x.provider, x.formula)}</div><div class="meta mono" title="${esc(x.exe)}">${esc(shortPath(x.home))}</div></div>
       <span class="badge">${esc(x.via)}</span>
-      ${x.adopted ? `<span class="badge ok">${icon("check", 12)}已接管</span>` : `<button class="btn btn-sm" data-act="adopt" data-i="${i}">${icon("link", 13)}接管</button>`}
+      ${x.adopted ? `<span class="badge ok">${icon("check", 12)}已接管${x.adopted_as && x.adopted_as !== x.version ? ` · ${esc(x.adopted_as)}` : ""}</span>${x.disabled ? `<span class="badge">已禁用</span>` : ""}` : `<button class="btn btn-sm" data-act="adopt" data-i="${i}">${icon("link", 13)}接管</button>`}
     </div>`).join("")}</div>`;
+  const mig = S.migration.length ? `<div class="callout warn"><span data-icon="alert"></span><div class="grow"><div class="t">有 ${S.migration.length} 个旧版接管记录</div>
+      <div class="d">旧版本通过符号链接接管，迁移后改为登记真实安装位置：${S.migration.map((a) => `${esc(a.tool)} ${esc(a.version)}（${a.action === "convert" ? "转换" : "删除无效记录"}）`).join("、")}</div></div>
+      <button class="btn" data-act="migrate">迁移</button></div>` : "";
+  const meta = d.createdAt ? `<span class="detect-meta">${d.refreshing ? icon("refresh", 13, "spin") + "正在检查变化…" : `上次检测 ${ago(d.createdAt)}`}</span>` : "";
   return `<div class="page">
-    <div class="page-head"><div><h1 class="page-title">检测与接管</h1><div class="page-sub">接管只会创建符号链接，原有安装不会被移动或修改。</div></div>
-    ${d.status === "ok" || d.status === "error" ? `<button class="btn" data-act="detect">${icon("refresh", 14)}重新检测</button>` : ""}</div>
-    ${body}</div>`;
+    <div class="page-head"><div><h1 class="page-title">检测与接管</h1><div class="page-sub">接管只登记真实安装位置，不创建链接，原有安装不会被移动或修改。</div></div>
+    <div style="display:flex;gap:12px;align-items:center">${meta}<button class="btn" data-act="detect" ${d.refreshing ? "disabled" : ""}>${icon("refresh", 14, d.refreshing ? "spin" : "")}重新检测</button></div></div>
+    ${mig}${body}</div>`;
+}
+
+async function loadDetected() {
+  if (S.detected.status === "idle") S.detected.status = "loading";
+  try {
+    const r = await invoke("detect_cached");
+    S.detected = { ...S.detected, status: "ok", items: r.items, createdAt: r.created_at, error: null };
+  } catch (e) { S.detected = { ...S.detected, status: "error", error: String(e) }; }
+  if (route().name === "detect") render();
+  checkDetect();
+  invoke("migrate_adoptions", { dryRun: true }).then((a) => { S.migration = a; if (route().name === "detect") render(); }).catch(() => {});
+}
+
+let lastCheck = 0;
+async function checkDetect(force = false) {
+  if (!force && Date.now() - lastCheck < 30000) return;
+  lastCheck = Date.now();
+  S.detected.refreshing = true;
+  if (route().name === "detect") render();
+  try { await invoke("detect_check"); } catch (_) { /* best effort */ }
+  S.detected.refreshing = false;
+  if (route().name === "detect") render();
+}
+
+function onDetectUpdated(r) {
+  S.detected = { ...S.detected, status: "ok", items: r.items, createdAt: r.created_at, error: null };
+  if (route().name === "detect") render();
 }
 
 // ---------------------------------------------------------------- page: settings
@@ -505,27 +594,65 @@ async function onAction(btn) {
       return load({ quiet: true });
     case "uninstall": {
       const adopted = btn.dataset.adopted === "true";
-      const ok = await confirmDialog({
-        title: adopted ? `取消接管 ${tool} ${v}？` : `卸载 ${tool} ${v}？`,
-        body: adopted ? "只会删除 runa 中的链接，系统原有安装保持不变。" : `将删除 <span class="mono">${esc(shortPath(S.ov.home + "/installs/" + tool + "/" + v))}</span>，此操作无法撤销。`,
-        ok: adopted ? "取消接管" : "卸载", danger: true,
+      const plans = {};
+      const getPlan = async (mode) => (plans[mode] ??= await invoke("uninstall_plan", { tool, version: v, mode }));
+      const mode = await choiceDialog(adopted ? {
+        title: `卸载 ${tool} ${v}`,
+        intro: "这是接管的版本，请选择处理方式。",
+        options: [
+          { key: "forget", title: "只移除管理", desc: "删除 runa 中的记录，原有安装和文件保持不变。" },
+          { key: "purge", title: "彻底卸载", desc: "通过它所属的工具（Homebrew、nvm 等）卸载，或删除安装目录。" },
+        ],
+        initial: "forget",
+        describe: async (m) => {
+          const p = await getPlan(m);
+          const blocked = p.kind === "refuse" || p.needs_root;
+          return { html: planHtml(p), okDisabled: p.kind === "refuse", danger: m === "purge", okLabel: m === "forget" ? "移除管理" : blocked ? "我已了解" : "彻底卸载" };
+        },
+      } : {
+        title: `卸载 ${tool} ${v}？`,
+        intro: "此操作无法撤销。",
+        initial: "auto",
+        describe: async () => ({ html: planHtml(await getPlan("auto")), danger: true, okLabel: "卸载" }),
       });
-      if (!ok) return;
-      await invoke("uninstall", { tool, version: v }).catch(fail("卸载失败"));
-      toast(adopted ? `已取消接管 ${tool} ${v}` : `已卸载 ${tool} ${v}`);
+      if (!mode) return;
+      const p = plans[mode];
+      if (p?.needs_root) { toast("需要管理员权限", `请在终端执行：${p.command_line}`, "error"); return; }
+      btn.disabled = true;
+      await invoke("uninstall", { tool, version: v, mode }).catch(fail("卸载失败"));
+      toast(mode === "forget" ? `已移除对 ${tool} ${v} 的管理` : `已卸载 ${tool} ${v}`, mode === "forget" ? "原有安装保持不变" : "");
+      checkDetect(true);
       return load({ quiet: true });
     }
-    case "detect":
-      S.detected = { status: "loading", items: [] }; render();
-      try { S.detected = { status: "ok", items: await invoke("detect_runtimes") }; }
-      catch (e) { S.detected = { status: "error", items: [], error: String(e) }; }
+    case "toggle": {
+      const disabled = btn.dataset.disabled !== "true";
+      const warnings = await invoke("set_disabled", { tool, version: v, disabled, project: projectDir() || null }).catch(fail("操作失败"));
+      if (warnings.length) warnings.forEach((w) => toast(`已禁用 ${tool} ${v}`, w, "error"));
+      else toast(disabled ? `已禁用 ${tool} ${v}` : `已启用 ${tool} ${v}`, disabled ? "不会再被解析、生成 shim 或加入 PATH" : "");
+      if (S.detected.items.length) S.detected.items = (await invoke("detect_cached").catch(() => null))?.items ?? S.detected.items;
+      return load({ quiet: true });
+    }
+    case "detect": {
+      S.detected = { ...S.detected, status: S.detected.items.length ? "ok" : "loading", refreshing: true }; render();
+      try { const r = await invoke("detect_refresh"); S.detected = { status: "ok", items: r.items, createdAt: r.created_at, error: null, refreshing: false }; }
+      catch (e) { S.detected = { ...S.detected, status: "error", error: String(e), refreshing: false }; }
       return render();
+    }
+    case "migrate": {
+      const ok = await confirmDialog({ title: "迁移旧版接管记录？", body: "只会删除 runa 目录中的符号链接并改写记录，不会跟随链接，也不会修改原有安装。", ok: "迁移" });
+      if (!ok) return;
+      const acts = await invoke("migrate_adoptions", { dryRun: false }).catch(fail("迁移失败"));
+      S.migration = [];
+      toast(`已迁移 ${acts.length} 条记录`, acts.map((a) => `${a.tool} ${a.version}: ${a.note}`).join("；"));
+      loadDetected();
+      return load({ quiet: true });
+    }
     case "adopt": {
       const item = S.detected.items[Number(btn.dataset.i)];
       btn.disabled = true;
-      const ver = await invoke("adopt", { item, name: null }).catch(fail("接管失败"));
+      const ver = await invoke("adopt", { item, name: null }).catch((e) => { btn.disabled = false; return fail("接管失败")(e); });
       toast(`已接管 ${item.tool} ${ver}`, "可在版本列表中像普通版本一样切换");
-      S.detected.items = await invoke("detect_runtimes").catch(() => S.detected.items);
+      S.detected.items = (await invoke("detect_cached").catch(() => null))?.items ?? S.detected.items;
       return load({ quiet: true });
     }
     case "fix-shell":
@@ -613,5 +740,8 @@ $("#refresh").addEventListener("click", () => { S.remote = {}; S.usage = null; l
 hydrateIcons();
 applyTheme();
 T.event.listen("install-progress", (ev) => onProgress(ev.payload));
+T.event.listen("detect-updated", (ev) => onDetectUpdated(ev.payload));
+window.addEventListener("focus", () => { if (S.detected.status !== "idle") checkDetect(); });
 render();
 load();
+loadDetected();

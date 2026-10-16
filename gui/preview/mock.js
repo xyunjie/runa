@@ -70,6 +70,12 @@
       { tool: "java", version: "17.0.12", exe: "/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home/bin/java", found_in: "", home: "", via: "JAVA_HOME", adopted: false },
       { tool: "go", version: "1.24.4", exe: "/opt/homebrew/bin/go", found_in: "/opt/homebrew/bin", home: "/opt/homebrew/Cellar/go/1.24.4/libexec", via: "PATH", adopted: false },
     ]; },
+    detect_cached: async () => ({ items: (await handlers.detect_runtimes()).map((x) => ({ provider: x.home.includes("Cellar") ? "homebrew" : x.home.startsWith("/usr") && !x.home.startsWith("/usr/local") ? "system" : "manual", formula: x.home.includes("Cellar") ? x.home.split("/Cellar/")[1].split("/")[0] : null, ...x })), from_cache: true, stale: false, created_at: Date.now() / 1000 - 600 }),
+    detect_refresh: async () => ({ ...(await handlers.detect_cached()), from_cache: false, created_at: Date.now() / 1000 }),
+    detect_check: async () => false,
+    migrate_adoptions: async () => [],
+    set_disabled: async () => [],
+    uninstall_plan: async ({ tool, version, mode }) => ({ tool, version, kind: mode === "forget" ? "forget" : mode === "purge" ? "provider_command" : "delete_install", provider: mode === "auto" ? null : "homebrew", command_line: mode === "purge" ? `brew uninstall ${tool}` : null, paths: [`${H}/installs/${tool}/${version}`], home: null, needs_root: false, summary: mode === "forget" ? "只移除 runa 的管理记录" : mode === "purge" ? `通过 homebrew 彻底卸载：brew uninstall ${tool}` : `删除 ${H}/installs/${tool}/${version}` }),
   };
   window.__TAURI__ = {
     core: { invoke: async (cmd, args) => { if (!handlers[cmd]) return null; return handlers[cmd](args || {}); } },

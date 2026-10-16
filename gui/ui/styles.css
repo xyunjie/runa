@@ -321,3 +321,14 @@ code, .mono { font-family: var(--mono); font-size: .92em; }
 
 @media (max-width: 1000px) { .stats { grid-template-columns: repeat(2, 1fr); } .group { grid-template-columns: 1fr; gap: var(--s4); } }
 @media (prefers-reduced-motion: reduce) { * { animation-duration: 1ms !important; transition-duration: 1ms !important; } }
+
+/* detection / adoption management */
+.item.is-disabled .main-col { opacity: .55; }
+.dialog.wide { width: 520px; }
+.dialog .options { margin-top: var(--s4); }
+.plan-box { margin-top: var(--s3); padding: var(--s3); border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2, transparent); font-size: var(--fs-sm); color: var(--text-2); max-height: 220px; overflow: auto; }
+.plan-box .mono { display: block; word-break: break-all; margin-top: 4px; color: var(--text); }
+.plan-box .lbl { color: var(--text-3); margin-top: var(--s2); }
+.plan-box .lbl:first-child { margin-top: 0; }
+.plan-box.danger { border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+.detect-meta { color: var(--text-3); font-size: var(--fs-sm); display: flex; gap: 6px; align-items: center; }

@@ -8,9 +8,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use runa_core::activate;
-use runa_core::detect::{self, Detected};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use runa_core::detect::{self, DetectReport, Detected, MigrationAction};
 use runa_core::installer::Progress;
 use runa_core::manager::ToolStatus;
+use runa_core::uninstall::{self, Mode, UninstallPlan};
 use runa_core::{Manager, Settings};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -166,13 +169,39 @@ async fn install(app: AppHandle, tool: String, spec: String) -> CmdResult<String
     .await
 }
 
+/// What uninstalling would do (shown in the confirmation dialog). Changes nothing.
 #[tauri::command]
-async fn uninstall(tool: String, version: String) -> CmdResult<()> {
+async fn uninstall_plan(tool: String, version: String, mode: Mode) -> CmdResult<UninstallPlan> {
+    blocking(move || uninstall::plan(&manager()?, &tool, &version, mode)).await
+}
+
+/// `mode`: `auto` (downloads), `forget` (adopted: remove management only) or `purge`
+/// (adopted: complete uninstall through the owning tool).
+#[tauri::command]
+async fn uninstall(tool: String, version: String, mode: Option<Mode>) -> CmdResult<()> {
     blocking(move || {
         let m = manager()?;
-        m.uninstall(&tool, &version)?;
+        let plan = uninstall::plan(&m, &tool, &version, mode.unwrap_or(Mode::Auto))?;
+        uninstall::execute(&m, &plan)?;
         let _ = activate::reshim(&m, &activate::cli_path());
         Ok(())
+    })
+    .await
+}
+
+/// Enable / disable a version; returns warnings (global version, project requirement).
+#[tauri::command]
+async fn set_disabled(
+    tool: String,
+    version: String,
+    disabled: bool,
+    project: Option<String>,
+) -> CmdResult<Vec<String>> {
+    blocking(move || {
+        let m = manager()?;
+        let w = m.set_disabled(&tool, &version, disabled, &project_dir(project))?;
+        let _ = activate::reshim(&m, &activate::cli_path());
+        Ok(w)
     })
     .await
 }
@@ -210,7 +239,62 @@ async fn unset_local(project: String, tool: String) -> CmdResult<()> {
 
 #[tauri::command]
 async fn detect_runtimes() -> CmdResult<Vec<Detected>> {
-    blocking(|| Ok(detect::detect(&manager()?))).await
+    blocking(|| Ok(detect::detect_cached(&manager()?).items)).await
+}
+
+/// Cached results immediately (no scan unless there is no cache at all). `stale` tells
+/// the page to expect a `detect-updated` event from [`detect_check`].
+#[tauri::command]
+async fn detect_cached() -> CmdResult<DetectReport> {
+    blocking(|| {
+        let m = manager()?;
+        Ok(detect::cached_only(&m).unwrap_or_else(|| detect::detect_cached(&m)))
+    })
+    .await
+}
+
+/// Force a rescan.
+#[tauri::command]
+async fn detect_refresh() -> CmdResult<DetectReport> {
+    blocking(|| Ok(detect::detect_fresh(&manager()?))).await
+}
+
+static CHECKING: AtomicBool = AtomicBool::new(false);
+
+/// Background check (app start / window focus): rescan only if the fingerprint changed
+/// or the cache expired, then emit `detect-updated`. Returns whether it rescanned.
+#[tauri::command]
+async fn detect_check(app: AppHandle) -> CmdResult<bool> {
+    if CHECKING.swap(true, Ordering::SeqCst) {
+        return Ok(false);
+    }
+    let r = blocking(move || {
+        let m = manager()?;
+        let stale = detect::cached_only(&m).map(|c| c.stale).unwrap_or(true);
+        if !stale {
+            return Ok(false);
+        }
+        let rep = detect::detect_fresh(&m);
+        let _ = app.emit("detect-updated", &rep);
+        Ok(true)
+    })
+    .await;
+    CHECKING.store(false, Ordering::SeqCst);
+    r
+}
+
+/// Convert legacy symlink adoptions to registry receipts (`dry_run` only reports).
+#[tauri::command]
+async fn migrate_adoptions(dry_run: bool) -> CmdResult<Vec<MigrationAction>> {
+    blocking(move || {
+        let m = manager()?;
+        let acts = detect::migrate(&m, dry_run)?;
+        if !dry_run {
+            let _ = activate::reshim(&m, &activate::cli_path());
+        }
+        Ok(acts)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -289,10 +373,16 @@ fn main() {
             disk_usage,
             install,
             uninstall,
+            uninstall_plan,
+            set_disabled,
             set_global,
             set_local,
             unset_local,
             detect_runtimes,
+            detect_cached,
+            detect_refresh,
+            detect_check,
+            migrate_adoptions,
             adopt,
             set_mirror,
             set_proxy,
