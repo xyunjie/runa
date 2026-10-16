@@ -1,0 +1,88 @@
+use std::path::{Path, PathBuf};
+
+use anyhow::{anyhow, Result};
+
+/// Layout of the runa home directory (default `~/.runa`, override with `RUNA_HOME`).
+///
+/// ```text
+/// ~/.runa/
+///   .tool-versions        global versions (asdf compatible)
+///   settings.json         mirror / proxy settings
+///   installs/<tool>/<version>/
+///   shims/                generated shims
+///   current/<tool>        symlink to the global version (best effort)
+///   plugins/*.json        declarative manifest plugins
+///   cache/downloads/      downloaded archives
+/// ```
+#[derive(Debug, Clone)]
+pub struct Paths {
+    pub root: PathBuf,
+}
+
+impl Paths {
+    pub fn detect() -> Result<Self> {
+        if let Some(v) = std::env::var_os("RUNA_HOME") {
+            if !v.is_empty() {
+                return Ok(Self {
+                    root: PathBuf::from(v),
+                });
+            }
+        }
+        let home = dirs::home_dir().ok_or_else(|| anyhow!("无法确定用户主目录"))?;
+        Ok(Self {
+            root: home.join(".runa"),
+        })
+    }
+
+    pub fn with_root(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    pub fn installs(&self) -> PathBuf {
+        self.root.join("installs")
+    }
+    pub fn tool_dir(&self, tool: &str) -> PathBuf {
+        self.installs().join(tool)
+    }
+    pub fn install_dir(&self, tool: &str, version: &str) -> PathBuf {
+        self.tool_dir(tool).join(version)
+    }
+    pub fn shims(&self) -> PathBuf {
+        self.root.join("shims")
+    }
+    pub fn current(&self) -> PathBuf {
+        self.root.join("current")
+    }
+    pub fn plugins(&self) -> PathBuf {
+        self.root.join("plugins")
+    }
+    pub fn downloads(&self) -> PathBuf {
+        self.root.join("cache").join("downloads")
+    }
+    pub fn settings_file(&self) -> PathBuf {
+        self.root.join("settings.json")
+    }
+    pub fn global_tool_versions(&self) -> PathBuf {
+        self.root.join(".tool-versions")
+    }
+
+    pub fn ensure(&self) -> Result<()> {
+        for d in [
+            self.installs(),
+            self.shims(),
+            self.plugins(),
+            self.downloads(),
+            self.current(),
+        ] {
+            std::fs::create_dir_all(&d)?;
+        }
+        Ok(())
+    }
+
+    /// True when `p` lives inside the runa home (used to skip our own shims in detection).
+    pub fn contains(&self, p: &Path) -> bool {
+        let root = std::fs::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone());
+        let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        p.starts_with(&root)
+    }
+}

@@ -1,0 +1,10 @@
+/target/
+**/target/
+node_modules/
+gui/src-tauri/gen/schemas/
+*.tar.gz
+*.zip
+.DS_Store
+.idea/
+.vscode/
+*.swp

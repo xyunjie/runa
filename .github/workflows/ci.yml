@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all -- --check
+      - name: clippy (core + cli)
+        run: cargo clippy -p runa-core -p runa-cli --all-targets -- -D warnings
+      - name: test (core + cli)
+        run: cargo test -p runa-core -p runa-cli
+      - name: smoke test (install node, switch versions)
+        shell: bash
+        env:
+          RUNA_HOME: ${{ runner.temp }}/runa-home
+        run: |
+          cargo build -p runa-cli
+          R=target/debug/runa
+          $R install node 20
+          $R install node 22
+          mkdir -p smoke && cd smoke
+          ../$R use node 20
+          ../$R exec -- node -v | grep '^v20\.'
+          RUNA_NODE_VERSION=22 ../$R exec -- node -v | grep '^v22\.'
+
+  gui:
+    name: gui build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev
+      - run: cargo build -p runa-gui

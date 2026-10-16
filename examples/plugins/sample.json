@@ -1,0 +1,32 @@
+[
+  {
+    "name": "deno",
+    "description": "Deno JavaScript/TypeScript 运行时",
+    "source": { "type": "github-releases", "repo": "denoland/deno", "tagPrefix": "v" },
+    "url": "https://github.com/denoland/deno/releases/download/v{version}/{asset}",
+    "assets": {
+      "windows/x64": "deno-x86_64-pc-windows-msvc.zip",
+      "linux/x64": "deno-x86_64-unknown-linux-gnu.zip",
+      "linux/arm64": "deno-aarch64-unknown-linux-gnu.zip",
+      "macos/x64": "deno-x86_64-apple-darwin.zip",
+      "macos/arm64": "deno-aarch64-apple-darwin.zip"
+    },
+    "sha256Url": "{url}.sha256sum",
+    "bin": ""
+  },
+  {
+    "name": "bun",
+    "description": "Bun JavaScript 运行时",
+    "source": { "type": "github-releases", "repo": "oven-sh/bun", "tagPrefix": "bun-v" },
+    "url": "https://github.com/oven-sh/bun/releases/download/bun-v{version}/{asset}",
+    "assets": {
+      "windows/x64": "bun-windows-x64.zip",
+      "linux/x64": "bun-linux-x64.zip",
+      "linux/arm64": "bun-linux-aarch64.zip",
+      "macos/x64": "bun-darwin-x64.zip",
+      "macos/arm64": "bun-darwin-aarch64.zip"
+    },
+    "sha256Url": "https://github.com/oven-sh/bun/releases/download/bun-v{version}/SHASUMS256.txt",
+    "bin": ""
+  }
+]

@@ -1,0 +1,18 @@
+[package]
+name = "runa-cli"
+description = "Command line interface of runa"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "runa"
+path = "src/main.rs"
+
+[dependencies]
+runa-core = { path = "../runa-core" }
+anyhow.workspace = true
+clap.workspace = true
+indicatif.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "runa-gui"
+description = "Desktop GUI of runa (Tauri v2)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "runa-gui"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+runa-core = { path = "../../crates/runa-core" }
+tauri = { version = "2", features = [] }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
