@@ -928,13 +928,48 @@ struct ProjectDetail {
     items: Vec<ProjectItem>,
 }
 
+/// Files showing a project uses a runtime even when they pin no version.
+fn runtime_markers(tool: &str) -> &'static [&'static str] {
+    match tool {
+        "python" => &["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"],
+        "node" => &["package.json"],
+        "java" => &["pom.xml", "build.gradle.kts", "build.gradle"],
+        "go" => &["go.mod"],
+        "rust" => &["Cargo.toml"],
+        "ruby" => &["Gemfile"],
+        "deno" => &["deno.json", "deno.jsonc"],
+        "bun" => &["bun.lockb", "bun.lock"],
+        _ => &[],
+    }
+}
+
+/// Row for a runtime the project uses without pinning a version.
+fn unspecified_item(m: &Manager, dir: &std::path::Path, t: &str) -> Option<ProjectItem> {
+    let marker = runtime_markers(t)
+        .iter()
+        .map(|f| dir.join(f))
+        .find(|p| p.is_file())?;
+    let resolved = m.resolve(t, dir).and_then(|r| r.version);
+    Some(ProjectItem {
+        tool: t.to_string(),
+        required: String::new(),
+        source: marker.display().to_string(),
+        file: Some(marker.display().to_string()),
+        status: "unspecified".into(),
+        resolved,
+        installed: m.enabled_versions(t),
+    })
+}
+
 fn project_items(m: &Manager, dir: &std::path::Path) -> Vec<ProjectItem> {
     let home = dirs_home();
     m.registry
         .names()
         .into_iter()
         .filter_map(|t| {
-            let spec = runa_core::resolver::project_spec(&t, dir, home.as_deref())?;
+            let Some(spec) = runa_core::resolver::project_spec(&t, dir, home.as_deref()) else {
+                return unspecified_item(m, dir, &t);
+            };
             let file = match &spec.source {
                 runa_core::Source::File(p) => Some(p.display().to_string()),
                 _ => None,
@@ -1025,6 +1060,8 @@ const PROJECT_MARKERS: &[&str] = &[
     "Gemfile",
     "deno.json",
     "deno.jsonc",
+    "bun.lockb",
+    "bun.lock",
     ".tool-versions",
     ".nvmrc",
     ".node-version",

@@ -147,7 +147,7 @@ export interface McpStatus { cli_path: string; cli_found: boolean; policy: McpPo
 export interface McpOperation { kind: "install" | "set_global" | "uninstall"; tool: string; version: string; via: string | null; mode: string | null }
 export interface McpApproval { id: string; op: McpOperation; summary: string; details: string[]; client: string | null }
 
-export type ProjectStatus = "ok" | "mismatch" | "missing" | "system";
+export type ProjectStatus = "ok" | "mismatch" | "missing" | "system" | "unspecified";
 export interface ProjectItem { tool: string; required: string; source: string; file: string | null; status: ProjectStatus; resolved: string | null; installed: string[] }
 export interface ProjectDetail { path: string; name: string; exists: boolean; items: ProjectItem[] }
 

@@ -62,7 +62,7 @@ pub fn env_key(tool: &str) -> String {
 pub fn legacy_files(tool: &str) -> &'static [&'static str] {
     match tool {
         "node" => &[".nvmrc", ".node-version", "package.json"],
-        "python" => &[".python-version"],
+        "python" => &[".python-version", "runtime.txt"],
         "java" => &[".java-version", ".sdkmanrc"],
         "go" => &[".go-version", "go.mod"],
         "ruby" => &[".ruby-version"],
@@ -77,7 +77,13 @@ pub fn legacy_files(tool: &str) -> &'static [&'static str] {
 pub fn build_files(tool: &str) -> &'static [&'static str] {
     match tool {
         "java" => &["pom.xml", "build.gradle.kts", "build.gradle"],
-        "python" => &["pyproject.toml"],
+        "python" => &[
+            "Pipfile",
+            "pyproject.toml",
+            "setup.py",
+            ".venv/pyvenv.cfg",
+            "venv/pyvenv.cfg",
+        ],
         _ => &[],
     }
 }
@@ -89,6 +95,9 @@ pub fn parse_build_file(path: &Path) -> Option<String> {
         "pom.xml" => maven_java(path, 0, &[]),
         "build.gradle" | "build.gradle.kts" => gradle_java(&std::fs::read_to_string(path).ok()?),
         "pyproject.toml" => pyproject_python(&std::fs::read_to_string(path).ok()?),
+        "Pipfile" => pipfile_python(&std::fs::read_to_string(path).ok()?),
+        "setup.py" => setup_py_python(&std::fs::read_to_string(path).ok()?),
+        "pyvenv.cfg" => pyvenv_version(&std::fs::read_to_string(path).ok()?),
         _ => None,
     }
 }
@@ -248,20 +257,68 @@ fn gradle_java(text: &str) -> Option<String> {
         .or_else(|| after("sourceCompatibility"))
 }
 
-/// `[project] requires-python = ">=3.10"` (any section, first hit).
-fn pyproject_python(text: &str) -> Option<String> {
+/// `key = "value"` in TOML-ish text, optionally only inside `[section]`.
+fn toml_value(text: &str, section: Option<&str>, key: &str) -> Option<String> {
+    let mut cur = String::new();
     for line in text.lines() {
         let l = line.split('#').next().unwrap_or("").trim();
-        if let Some(rest) = l.strip_prefix("requires-python") {
-            let v = rest
-                .trim_start()
-                .strip_prefix('=')?
-                .trim()
-                .trim_matches(['"', '\'']);
-            return (!v.trim().is_empty()).then(|| v.trim().to_string());
+        if l.starts_with('[') {
+            cur = l.trim_matches(['[', ']']).trim().to_string();
+            continue;
+        }
+        if section.is_some_and(|s| s != cur) {
+            continue;
+        }
+        let Some(rest) = l.strip_prefix(key) else {
+            continue;
+        };
+        let Some(v) = rest.trim_start().strip_prefix('=') else {
+            continue;
+        };
+        let v = v.trim().trim_matches(['"', '\'']).trim();
+        if !v.is_empty() && !v.starts_with('{') {
+            return Some(v.to_string());
         }
     }
     None
+}
+
+/// `[project] requires-python`, else poetry's `[tool.poetry.dependencies] python`.
+fn pyproject_python(text: &str) -> Option<String> {
+    toml_value(text, Some("project"), "requires-python")
+        .or_else(|| toml_value(text, None, "requires-python"))
+        .or_else(|| toml_value(text, Some("tool.poetry.dependencies"), "python"))
+}
+
+/// Pipfile `[requires] python_full_version` / `python_version`.
+fn pipfile_python(text: &str) -> Option<String> {
+    toml_value(text, Some("requires"), "python_full_version")
+        .or_else(|| toml_value(text, Some("requires"), "python_version"))
+}
+
+/// `python_requires=">=3.8"` in setup.py.
+fn setup_py_python(text: &str) -> Option<String> {
+    let i = text.find("python_requires")?;
+    let r = text[i + "python_requires".len()..]
+        .trim_start()
+        .strip_prefix('=')?;
+    let r = r.trim_start();
+    let q = r.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+    let body = &r[1..];
+    let v = body[..body.find(q)?].trim();
+    (!v.is_empty()).then(|| v.to_string())
+}
+
+/// `.venv/pyvenv.cfg`: `version = 3.12.2` (or `version_info = 3.12.2.final.0`).
+fn pyvenv_version(text: &str) -> Option<String> {
+    let get = |k: &str| {
+        text.lines().find_map(|l| {
+            let (a, b) = l.split_once('=')?;
+            (a.trim() == k).then(|| b.trim().to_string())
+        })
+    };
+    get("version")
+        .or_else(|| get("version_info").map(|v| v.split('.').take(3).collect::<Vec<_>>().join(".")))
 }
 
 /// Extract a version spec from a legacy file's content.
@@ -269,6 +326,9 @@ pub fn parse_legacy(file_name: &str, text: &str) -> Option<String> {
     match file_name {
         "package.json" => package_json_engine(text),
         "go.mod" => go_mod_version(text),
+        "runtime.txt" => {
+            first_meaningful_line(text).and_then(|v| v.strip_prefix("python-").map(str::to_string))
+        }
         ".sdkmanrc" => sdkman_java(text),
         ".ruby-version" => first_meaningful_line(text).map(|v| {
             // rbenv / chruby accept `ruby-3.3.0`
@@ -459,6 +519,47 @@ pub fn explicit_in_dir(tool: &str, dir: &Path) -> Option<Spec> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn python_hints() {
+        assert_eq!(
+            parse_legacy("runtime.txt", "python-3.11.4\n").as_deref(),
+            Some("3.11.4")
+        );
+        assert_eq!(
+            pyproject_python("[tool.poetry.dependencies]\npython = \"^3.10\"\nnumpy = \"1\"\n")
+                .as_deref(),
+            Some("^3.10")
+        );
+        assert_eq!(
+            pyproject_python("[tool.pytest.ini_options]\naddopts = \"-q\"\n"),
+            None
+        );
+        assert_eq!(
+            pipfile_python("[packages]\nx = \"*\"\n[requires]\npython_version = \"3.11\"\n")
+                .as_deref(),
+            Some("3.11")
+        );
+        assert_eq!(
+            setup_py_python("setup(name='x', python_requires = '>=3.8')").as_deref(),
+            Some(">=3.8")
+        );
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir(d.path().join(".venv")).unwrap();
+        fs::write(
+            d.path().join(".venv/pyvenv.cfg"),
+            "home = /x\nversion_info = 3.12.2.final.0\n",
+        )
+        .unwrap();
+        fs::write(
+            d.path().join("pyproject.toml"),
+            "[tool.pytest.ini_options]\n",
+        )
+        .unwrap();
+        let s = project_spec("python", d.path(), None).unwrap();
+        assert_eq!(s.specs, vec!["3.12.2"]);
+        assert_eq!(s.source, Source::File(d.path().join(".venv/pyvenv.cfg")));
+    }
 
     #[test]
     fn maven_detection() {

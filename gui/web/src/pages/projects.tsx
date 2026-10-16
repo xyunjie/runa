@@ -185,14 +185,21 @@ const STATUS: Record<string, { label: string; variant: "ok" | "warn" | "default"
   mismatch: { label: "版本不一致", variant: "warn" },
   missing: { label: "未安装", variant: "warn" },
   system: { label: "使用系统版本", variant: "default" },
+  unspecified: { label: "未指定版本", variant: "default" },
 };
+
+/** Human label for where a requirement came from. */
+function sourceLabel(src: string, sp: (p: string) => string) {
+  const m = src.match(/[\\/](\.?venv)[\\/]pyvenv\.cfg$/);
+  return m ? `虚拟环境 ${m[1]}（${sp(src)}）` : sp(src);
+}
 
 function ItemRow({ it, path, onChanged }: { it: ProjectItem; path: string; onChanged: () => void }) {
   const sp = useShortPath();
   const job = useStore((s) => s.jobs[it.tool]);
   const st = STATUS[it.status];
   const setVersion = async (v: string) => {
-    if (!v || v === it.resolved) return;
+    if (!v || (v === it.resolved && it.status !== "unspecified")) return;
     try { const f = await api.projectSetVersion(path, it.tool, v); notify(`${it.tool} 已改为 ${v}`, `写入 ${sp(f)}`); }
     catch (e) { notify("修改版本失败", String(e), "error"); }
     onChanged();
@@ -203,16 +210,18 @@ function ItemRow({ it, path, onChanged }: { it: ProjectItem; path: string; onCha
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2 font-medium">
           {it.tool}<span className="font-mono">{it.required}</span>
-          <Badge variant={st.variant}>{it.status === "ok" ? <Check size={11} /> : it.status !== "system" ? <AlertTriangle size={11} /> : null}{st.label}</Badge>
-          {it.resolved && it.resolved !== it.required && <span className="font-mono text-sm text-fg-3">→ {it.resolved}</span>}
+          <Badge variant={st.variant}>{it.status === "ok" ? <Check size={11} /> : it.status !== "system" && it.status !== "unspecified" ? <AlertTriangle size={11} /> : null}{st.label}</Badge>
+          {it.status === "unspecified"
+            ? <span className="text-sm text-fg-3">{it.resolved ? `当前使用全局 ${it.resolved}` : "未设置全局版本"}</span>
+            : it.resolved && it.resolved !== it.required && <span className="font-mono text-sm text-fg-3">→ {it.resolved}</span>}
         </div>
-        <div className="selectable truncate font-mono text-sm text-fg-3" title={it.source}>{sp(it.source)}</div>
+        <div className="selectable truncate font-mono text-sm text-fg-3" title={it.source}>{sourceLabel(it.source, sp)}</div>
       </div>
       <div data-actions="" data-show="">
         {it.installed.length > 0 && (
-          <select aria-label={`修改 ${it.tool} 版本`} value={it.resolved || ""} onChange={(e) => setVersion(e.target.value)}
+          <select aria-label={`修改 ${it.tool} 版本`} value={it.status === "unspecified" ? "" : it.resolved || ""} onChange={(e) => setVersion(e.target.value)}
             className="h-[26px] max-w-[160px] rounded-md border border-border bg-surface px-1.5 font-mono text-xs text-fg shadow-xs outline-none focus-visible:outline-2 focus-visible:outline-accent">
-            {!it.resolved && <option value="">改用已安装版本…</option>}
+            {it.status === "unspecified" ? <option value="">固定版本…</option> : !it.resolved && <option value="">改用已安装版本…</option>}
             {it.installed.map((v) => <option key={v} value={v}>{v}</option>)}
           </select>
         )}
@@ -251,7 +260,7 @@ export function ProjectPage({ path }: { path: string }) {
       {!d.exists && <Callout kind="danger" title="文件夹不存在">项目可能已被移动或删除，可在“管理项目”中移除。</Callout>}
       {d.items.map((it) => <ProgressCard key={`p-${it.tool}`} id={it.tool} />)}
       {d.exists && !d.items.length ? (
-        <List><EmptyState icon={FolderGit2} title="没有发现版本要求" desc="这个文件夹及其上级目录中没有 .tool-versions、.nvmrc、.python-version、go.mod 等版本文件。用 runa use <工具> <版本> 或下方任一运行时页面设置。" /></List>
+        <List><EmptyState icon={FolderGit2} title="没有发现版本要求" desc="这个文件夹及其上级目录中没有 .tool-versions、.nvmrc、.python-version、go.mod、pom.xml、package.json 等版本或项目文件。用 runa use <工具> <版本> 或下方任一运行时页面设置。" /></List>
       ) : (
         <List>{d.items.map((it) => <ItemRow key={it.tool} it={it} path={d.path} onChanged={refresh} />)}</List>
       )}

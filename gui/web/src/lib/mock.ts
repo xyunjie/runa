@@ -168,6 +168,7 @@ const handlers: Record<string, (a: any) => Promise<unknown>> = {
   project_detail: async ({ path }) => ({ path, name: path.split("/").pop(), exists: true, items: [
     { tool: "node", required: "20", source: `${path}/.nvmrc`, file: `${path}/.nvmrc`, status: "ok", resolved: "20.20.2", installed: ["22.23.3", "20.20.2"] },
     { tool: "python", required: "3.11", source: `${path}/.python-version`, file: `${path}/.python-version`, status: "mismatch", resolved: null, installed: ["3.13.16", "3.12.15"] },
+    { tool: "rust", required: "", source: `${path}/Cargo.toml`, file: `${path}/Cargo.toml`, status: "unspecified", resolved: "1.94.0", installed: ["1.94.0"] },
     { tool: "go", required: "1.27", source: `${path}/go.mod`, file: `${path}/go.mod`, status: "missing", resolved: null, installed: [] },
   ] }),
   project_set_version: async ({ path }) => `${path}/.tool-versions`,
