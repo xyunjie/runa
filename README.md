@@ -56,7 +56,26 @@ Runa is a **runtime version manager** written in Rust that runs natively on **ma
 
 ## Install
 
-> Prebuilt binaries are not published yet. The [release workflow](.github/workflows/release.yml) builds the CLI for Linux (x86_64 / arm64), macOS (Intel / Apple Silicon) and Windows (x86_64) plus GUI installers; once a release is tagged they will appear on the [Releases](https://github.com/xyunjie/runa/releases) page and `runa update` can keep the CLI current.
+Download from [GitHub Releases](https://github.com/xyunjie/runa/releases):
+
+| | Desktop app (includes the `runa` CLI) | CLI only |
+|---|---|---|
+| macOS (Apple Silicon / Intel) | `Runa_<version>_aarch64.dmg` / `Runa_<version>_x64.dmg` | `runa-<tag>-aarch64-apple-darwin.tar.gz` / `runa-<tag>-x86_64-apple-darwin.tar.gz` |
+| Windows x64 | `Runa_<version>_x64-setup.exe` (NSIS) or `Runa_<version>_x64_en-US.msi` | `runa-<tag>-x86_64-pc-windows-msvc.zip` |
+| Linux x64 / arm64 | `Runa_<version>_amd64.AppImage` / `.deb` / `.rpm` (x64) | `runa-<tag>-x86_64-unknown-linux-gnu.tar.gz` / `runa-<tag>-aarch64-unknown-linux-gnu.tar.gz` |
+
+Unpack the CLI archive, put `runa` on your `PATH`, then run `runa setup`. Later updates: `runa update`.
+
+**Verify downloads** against `SHA256SUMS` from the same release:
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing          # Linux
+shasum -a 256 -c SHA256SUMS --ignore-missing      # macOS
+# Windows PowerShell: compare with the line in SHA256SUMS
+(Get-FileHash .\runa-v0.1.0-x86_64-pc-windows-msvc.zip -Algorithm SHA256).Hash
+```
+
+> **Builds are not code-signed yet.** macOS Gatekeeper may say the app "is damaged" or "can't be opened": run `xattr -dr com.apple.quarantine /Applications/Runa.app` (or right-click → Open). Windows SmartScreen may warn about an unknown publisher: click *More info → Run anyway*.
 
 Build from source (Rust 1.88+):
 

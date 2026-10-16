@@ -45,6 +45,29 @@
 - **镜像与代理**：一键切换国内镜像（npmmirror、golang.google.cn），代理支持 `http` / `https` / `socks5` / `socks5h`、`off`、`system`。
 - **安全**：解压时防 zip-slip（拒绝 `..`、绝对路径以及指向目录外的符号链接）；上游提供校验值时强制 SHA256 校验。
 
+## 安装
+
+从 [GitHub Releases](https://github.com/xyunjie/runa/releases) 下载：
+
+| | 桌面端（已内置 `runa` 命令行） | 仅命令行 |
+|---|---|---|
+| macOS（Apple 芯片 / Intel） | `Runa_<版本>_aarch64.dmg` / `Runa_<版本>_x64.dmg` | `runa-<tag>-aarch64-apple-darwin.tar.gz` / `runa-<tag>-x86_64-apple-darwin.tar.gz` |
+| Windows x64 | `Runa_<版本>_x64-setup.exe`（NSIS）或 `Runa_<版本>_x64_en-US.msi` | `runa-<tag>-x86_64-pc-windows-msvc.zip` |
+| Linux x64 / arm64 | `Runa_<版本>_amd64.AppImage` / `.deb` / `.rpm`（x64） | `runa-<tag>-x86_64-unknown-linux-gnu.tar.gz` / `runa-<tag>-aarch64-unknown-linux-gnu.tar.gz` |
+
+解压命令行包，把 `runa` 放进 `PATH`，再执行 `runa setup`。之后用 `runa update` 更新。
+
+**校验下载**（使用同一发布中的 `SHA256SUMS`）：
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing          # Linux
+shasum -a 256 -c SHA256SUMS --ignore-missing      # macOS
+# Windows PowerShell：与 SHA256SUMS 中对应的行比对
+(Get-FileHash .\runa-v0.1.0-x86_64-pc-windows-msvc.zip -Algorithm SHA256).Hash
+```
+
+> **安装包暂未签名。** macOS 提示“已损坏”或“无法打开”时，执行 `xattr -dr com.apple.quarantine /Applications/Runa.app`（或右键 → 打开）；Windows SmartScreen 提示未知发布者时，点“更多信息 → 仍要运行”。也可以按下文[从源码构建](#从源码构建)。
+
 ## 快速上手
 
 ```bash

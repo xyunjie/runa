@@ -1,16 +1,61 @@
 name: Release
 
+# Push a tag like v0.1.0 (must match the version in Cargo.toml / tauri.conf.json).
+# Builds the CLI and desktop installers and attaches them to a DRAFT release for review.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build, e.g. v0.1.0"
+        required: true
 
 permissions:
   contents: write
 
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  CARGO_TERM_COLOR: always
+
 jobs:
+  draft:
+    name: create draft release
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.r.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check versions match the tag
+        run: |
+          v="${TAG#v}"
+          grep -q "^version = \"$v\"" Cargo.toml || { echo "Cargo.toml version != $v"; exit 1; }
+          grep -q "\"version\": \"$v\"" gui/src-tauri/tauri.conf.json || { echo "tauri.conf.json version != $v"; exit 1; }
+      - name: Create (or reuse) the draft release
+        id: r
+        run: |
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate -q ".[] | select(.tag_name == \"$TAG\") | .id" | head -n1)
+          if [ -z "$id" ]; then
+            cat > notes.md <<'NOTES'
+          > **Unsigned builds.** These binaries are not code-signed or notarized.
+          > - **macOS:** if Gatekeeper says the app "is damaged" or "can't be opened", run `xattr -dr com.apple.quarantine /Applications/Runa.app` (or right-click → Open).
+          > - **Windows:** SmartScreen may warn about an unknown publisher — click *More info → Run anyway*.
+          >
+          > Verify downloads with `SHA256SUMS`: `sha256sum -c SHA256SUMS --ignore-missing` (macOS: `shasum -a 256 -c SHA256SUMS --ignore-missing`).
+          NOTES
+            id=$(gh api "repos/$GITHUB_REPOSITORY/releases" -X POST \
+              -f tag_name="$TAG" -f name="Runa $TAG" -F draft=true -F generate_release_notes=true \
+              -q .id)
+            body=$(gh api "repos/$GITHUB_REPOSITORY/releases/$id" -q .body)
+            printf '%s\n\n%s\n' "$(cat notes.md)" "$body" > full.md
+            gh api "repos/$GITHUB_REPOSITORY/releases/$id" -X PATCH -F body=@full.md > /dev/null
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
   cli:
     name: cli ${{ matrix.target }}
+    needs: draft
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -18,7 +63,7 @@ jobs:
         include:
           - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
-          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
           - { os: macos-latest, target: aarch64-apple-darwin }
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
     steps:
@@ -27,43 +72,46 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release -p runa-cli --target ${{ matrix.target }}
-      - name: Package
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked -p runa-cli --target ${{ matrix.target }}
+      - name: Package and upload
         shell: bash
         run: |
-          name=runa-${GITHUB_REF_NAME}-${{ matrix.target }}
+          name=runa-${TAG}-${{ matrix.target }}
           mkdir -p dist/$name
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
+          cp README.md README.zh-CN.md LICENSE dist/$name/
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
             cp target/${{ matrix.target }}/release/runa.exe dist/$name/
-            cp README.md LICENSE dist/$name/
             (cd dist && 7z a $name.zip $name >/dev/null)
+            f=dist/$name.zip
           else
             cp target/${{ matrix.target }}/release/runa dist/$name/
-            cp README.md LICENSE dist/$name/
             tar -C dist -czf dist/$name.tar.gz $name
+            f=dist/$name.tar.gz
           fi
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/*.tar.gz
-            dist/*.zip
+          gh release upload "$TAG" "$f" --clobber
 
   gui:
-    name: gui ${{ matrix.os }}
+    name: gui ${{ matrix.target }}
+    needs: draft
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-22.04, args: "" }
-          - { os: macos-latest, args: "--target universal-apple-darwin" }
-          - { os: windows-latest, args: "" }
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: gui-${{ matrix.target }}
       - name: Linux deps
         if: runner.os == 'Linux'
         run: |
@@ -76,14 +124,34 @@ jobs:
           cache-dependency-path: gui/web/package-lock.json
       - run: npm ci
         working-directory: gui/web
+      # The app shells out to the `runa` CLI (shims, shell hooks); bundle it as a sidecar
+      # so it is installed next to the app executable, where runa-gui looks first.
+      - name: Build CLI sidecar
+        shell: bash
+        run: |
+          cargo build --release --locked -p runa-cli --target ${{ matrix.target }}
+          mkdir -p gui/src-tauri/binaries
+          ext=""; [[ "$RUNNER_OS" == "Windows" ]] && ext=".exe"
+          cp target/${{ matrix.target }}/release/runa$ext gui/src-tauri/binaries/runa-${{ matrix.target }}$ext
       - run: cargo install tauri-cli --version "^2" --locked
       - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: gui
           tauriScript: cargo tauri
-          args: ${{ matrix.args }}
-          tagName: ${{ github.ref_name }}
-          releaseName: Runa ${{ github.ref_name }}
-          releaseDraft: true
+          args: --target ${{ matrix.target }} --config src-tauri/tauri.release.conf.json
+          releaseId: ${{ needs.draft.outputs.release_id }}
+
+  checksums:
+    name: SHA256SUMS
+    needs: [draft, cli, gui]
+    if: always() && needs.draft.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checksum every asset
+        run: |
+          mkdir a && cd a
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --skip-existing
+          rm -f SHA256SUMS
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS -R "$GITHUB_REPOSITORY" --clobber
