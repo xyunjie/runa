@@ -436,8 +436,8 @@ function pageDetect() {
     body = `<div class="callout danger"><span data-icon="alert"></span><div class="grow"><div class="t">检测失败</div><div class="d">${esc(d.error)}</div></div><button class="btn" data-act="detect">重试</button></div>`;
   else if (!d.items.length) body = `<div class="list">${emptyState("checkCircle", "没有发现其它安装", "PATH、常见目录以及 nvm / pyenv / SDKMAN! / asdf / fnm / Homebrew 中都没有发现 Node、Java、Python 或 Go。")}</div>`;
   else
-    body = `<div class="list">${d.items.map((x, i) => `<div class="item ${x.disabled ? "is-disabled" : ""}">${mark(x.tool, 32)}
-      <div class="main-col"><div class="title">${esc(x.tool)} <span class="ver">${esc(x.version)}</span>${providerBadge(x.provider, x.formula)}</div><div class="meta mono" title="${esc(x.exe)}">${esc(shortPath(x.home))}</div></div>
+    body = `<div class="list">${d.items.map((x, i) => `<div class="item ${x.disabled ? "is-disabled" : ""} ${x.system_default ? "is-global" : ""}">${mark(x.tool, 32)}
+      <div class="main-col"><div class="title">${esc(x.tool)} <span class="ver">${esc(x.version)}</span>${x.system_default ? `<span class="badge ok" title="系统 PATH 中排在最前，当前终端默认使用这个版本">${icon("check", 11)}当前全局</span>` : ""}${x.runa_global ? `<span class="badge">runa 全局</span>` : ""}${providerBadge(x.provider, x.formula)}</div><div class="meta mono" title="${esc(x.exe)}">${esc(shortPath(x.home))}</div></div>
       <span class="badge">${esc(x.via)}</span>
       ${x.adopted ? `<span class="badge ok">${icon("check", 12)}已接管${x.adopted_as && x.adopted_as !== x.version ? ` · ${esc(x.adopted_as)}` : ""}</span>${x.disabled ? `<span class="badge">已禁用</span>` : ""}` : `<button class="btn btn-sm" data-act="adopt" data-i="${i}">${icon("link", 13)}接管</button>`}
     </div>`).join("")}</div>`;
@@ -650,22 +650,24 @@ async function onAction(btn) {
     case "adopt": {
       const item = S.detected.items[Number(btn.dataset.i)];
       btn.disabled = true;
-      const ver = await invoke("adopt", { item, name: null }).catch((e) => { btn.disabled = false; return fail("接管失败")(e); });
-      toast(`已接管 ${item.tool} ${ver}`, "可在版本列表中像普通版本一样切换");
+      const res = await invoke("adopt", { item, name: null }).catch((e) => { btn.disabled = false; return fail("接管失败")(e); });
+      if (!res) return;
+      toast(`已接管 ${item.tool} ${res.version}`, res.set_global ? "这是当前全局使用的版本，已在 runa 中设为全局" : "可在版本列表中像普通版本一样切换");
       S.detected.items = (await invoke("detect_cached").catch(() => null))?.items ?? S.detected.items;
       return load({ quiet: true });
     }
     case "adopt-all": {
       const todo = S.detected.items.filter((x) => !x.adopted);
       if (!todo.length) return;
-      const ok = await confirmDialog({ title: `接管全部 ${todo.length} 个版本？`, body: "只登记真实安装位置，不移动、不修改原有安装。版本号重复时会以「版本-来源」命名，例如 22.16.0-homebrew。", ok: "全部接管" });
+      const ok = await confirmDialog({ title: `接管全部 ${todo.length} 个版本？`, body: "只登记真实安装位置，不移动、不修改原有安装。标记为「当前全局」的版本会同时在 runa 中设为全局。版本号重复时会以「版本-来源」命名，例如 22.16.0-homebrew。", ok: "全部接管" });
       if (!ok) return;
       btn.disabled = true;
       const res = await invoke("adopt_all").catch((e) => { btn.disabled = false; return fail("接管失败")(e); });
       if (!res) return;
       const bad = res.filter((r) => r.error);
+      const glob = res.filter((r) => r.set_global).map((r) => `${r.tool} ${r.adopted_as}`);
       toast(`已接管 ${res.length - bad.length} 个版本${bad.length ? `，${bad.length} 个失败` : ""}`,
-        bad.length ? bad.map((r) => `${r.tool} ${r.version}: ${r.error}`).join("；") : "可在版本列表中像普通版本一样切换");
+        [glob.length ? `已设为全局：${glob.join("、")}` : "", bad.map((r) => `${r.tool} ${r.version}: ${r.error}`).join("；")].filter(Boolean).join("；") || "可在版本列表中像普通版本一样切换");
       S.detected.items = (await invoke("detect_cached").catch(() => null))?.items ?? S.detected.items;
       return load({ quiet: true });
     }

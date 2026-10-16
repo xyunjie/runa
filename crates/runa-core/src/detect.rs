@@ -45,6 +45,13 @@ pub struct Detected {
     /// The adopted version is disabled.
     #[serde(default)]
     pub disabled: bool,
+    /// First hit for this tool on the system PATH (runa's own dirs excluded): the version
+    /// the machine uses globally without runa. Decided at scan time.
+    #[serde(default)]
+    pub system_default: bool,
+    /// Adopted, and it is runa's global version (computed on every read).
+    #[serde(default)]
+    pub runa_global: bool,
 }
 
 fn candidate_dirs(m: &Manager, tool: &str) -> Vec<(PathBuf, String)> {
@@ -313,6 +320,8 @@ fn scan(m: &Manager) -> Vec<Detected> {
         if exes.is_empty() {
             continue;
         }
+        // candidate_dirs lists PATH first, in PATH order, so the first PATH hit wins.
+        let mut default_taken = false;
         for (dir, via) in candidate_dirs(m, &tool) {
             if m.paths.contains(&dir) {
                 continue;
@@ -344,6 +353,8 @@ fn scan(m: &Manager) -> Vec<Detected> {
                 homes.push(home.clone());
                 let bin_dir = real_bin_dir(&home, exe).unwrap_or_else(|| dir.clone());
                 let (provider, formula) = classify(&home);
+                let system_default = !default_taken && via == "PATH";
+                default_taken |= system_default;
                 found.push(Detected {
                     tool: tool.clone(),
                     version,
@@ -356,6 +367,8 @@ fn scan(m: &Manager) -> Vec<Detected> {
                     adopted: false,
                     adopted_as: None,
                     disabled: false,
+                    system_default,
+                    runa_global: false,
                 });
                 break; // python3 found -> skip python in the same dir
             }
@@ -590,6 +603,7 @@ pub fn annotate(m: &Manager, items: &mut [Detected]) {
         d.adopted = false;
         d.adopted_as = None;
         d.disabled = false;
+        d.runa_global = false;
         let path_dir = d.exe.parent().map(Path::to_path_buf);
         for v in m.installed(&d.tool) {
             let Some(r) = m.receipt(&d.tool, &v) else {
@@ -608,6 +622,7 @@ pub fn annotate(m: &Manager, items: &mut [Detected]) {
                 });
             if hit {
                 d.adopted = true;
+                d.runa_global = m.global_version(&d.tool).as_deref() == Some(v.as_str());
                 d.adopted_as = Some(v.clone());
                 d.disabled = r.disabled;
                 break;
@@ -883,6 +898,19 @@ pub(crate) fn remove_artifacts(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Adopt `d`; when it is the machine's current global version (first on the system PATH)
+/// it also becomes runa's global version. Returns the adopted name and whether it was
+/// made global.
+pub fn adopt_detected(m: &Manager, d: &Detected, name: Option<&str>) -> Result<(String, bool)> {
+    let v = adopt(m, d, name)?;
+    let global = d.system_default && !v.is_empty();
+    if global {
+        m.set_global(&d.tool, &v)
+            .with_context(|| format!("已接管 {} {v}，但设为全局失败", d.tool))?;
+    }
+    Ok((v, global))
+}
+
 /// Result of adopting one item in [`adopt_all`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdoptOutcome {
@@ -891,6 +919,9 @@ pub struct AdoptOutcome {
     pub home: PathBuf,
     /// Name it was adopted as (`None` when it failed).
     pub adopted_as: Option<String>,
+    /// Became runa's global version (it was the machine's current global).
+    #[serde(default)]
+    pub set_global: bool,
     pub error: Option<String>,
 }
 
@@ -901,12 +932,13 @@ pub fn adopt_all(m: &Manager, items: &[Detected]) -> Vec<AdoptOutcome> {
     for d in items.iter().filter(|d| !d.adopted) {
         let taken = m.installed(&d.tool).iter().any(|v| v == &d.version);
         let name = taken.then(|| format!("{}-{}", d.version, d.provider));
-        let r = adopt(m, d, name.as_deref());
+        let r = adopt_detected(m, d, name.as_deref());
         out.push(AdoptOutcome {
             tool: d.tool.clone(),
             version: d.version.clone(),
             home: d.home.clone(),
-            adopted_as: r.as_ref().ok().cloned(),
+            adopted_as: r.as_ref().ok().map(|(v, _)| v.clone()),
+            set_global: r.as_ref().is_ok_and(|(_, g)| *g),
             error: r.err().map(|e| format!("{e:#}")),
         });
     }
@@ -1116,6 +1148,8 @@ mod tests {
             adopted: false,
             adopted_as: None,
             disabled: false,
+            system_default: false,
+            runa_global: false,
         };
         assert_eq!(adopt(&m, &d, None).unwrap(), "20.1.0");
         assert!(
@@ -1234,5 +1268,35 @@ mod tests {
         std::fs::write(d.join("bin/real"), "x").unwrap();
         assert!(remove_artifacts(&d).is_err());
         assert!(d.join("bin/real").exists());
+    }
+
+    #[test]
+    fn adopting_the_system_default_makes_it_runa_global() {
+        let t = tempfile::tempdir().unwrap();
+        let m = mgr(t.path());
+        let home = t.path().join("rt").join("node-v21.0.0");
+        exe(&home.join("bin/node"), "#!/bin/sh\necho v21.0.0\n");
+        let home = std::fs::canonicalize(&home).unwrap();
+        let mk = |default: bool, ver: &str| Detected {
+            tool: "node".into(),
+            version: ver.into(),
+            exe: home.join("bin/node"),
+            found_in: home.join("bin"),
+            home: home.clone(),
+            via: "PATH".into(),
+            provider: "manual".into(),
+            formula: None,
+            adopted: false,
+            adopted_as: None,
+            disabled: false,
+            system_default: default,
+            runa_global: false,
+        };
+        let (v, g) = adopt_detected(&m, &mk(true, "21.0.0"), None).unwrap();
+        assert!(g);
+        assert_eq!(m.global_version("node").as_deref(), Some(v.as_str()));
+        let mut items = vec![mk(true, "21.0.0")];
+        annotate(&m, &mut items);
+        assert!(items[0].adopted && items[0].runa_global);
     }
 }

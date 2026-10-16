@@ -624,6 +624,12 @@ fn run(cli: Cli) -> Result<i32> {
                 if d.disabled {
                     mark.push_str("（已禁用）");
                 }
+                if d.system_default {
+                    mark.push_str("（当前全局）");
+                }
+                if d.runa_global {
+                    mark.push_str("（runa 全局）");
+                }
                 let provider = match &d.formula {
                     Some(f) => format!("{}:{f}", d.provider),
                     None => d.provider.clone(),
@@ -710,12 +716,17 @@ fn run(cli: Cli) -> Result<i32> {
                 bail!("--name 只能用于单个运行时，请用 tool / --version 缩小范围");
             }
             for d in list {
-                match detect::adopt(&m, &d, name.as_deref()) {
-                    Ok(v) => eprintln!(
-                        "✓ 已接管 {} {v} ← {} [{}]",
+                match detect::adopt_detected(&m, &d, name.as_deref()) {
+                    Ok((v, global)) => eprintln!(
+                        "✓ 已接管 {} {v} ← {} [{}]{}",
                         d.tool,
                         d.home.display(),
-                        d.provider
+                        d.provider,
+                        if global {
+                            "，已设为全局版本"
+                        } else {
+                            ""
+                        }
                     ),
                     Err(e) => eprintln!("✗ {} {}: {e:#}", d.tool, d.version),
                 }

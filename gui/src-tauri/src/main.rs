@@ -297,13 +297,22 @@ async fn migrate_adoptions(dry_run: bool) -> CmdResult<Vec<MigrationAction>> {
     .await
 }
 
+#[derive(serde::Serialize)]
+struct AdoptResult {
+    version: String,
+    set_global: bool,
+}
+
 #[tauri::command]
-async fn adopt(item: Detected, name: Option<String>) -> CmdResult<String> {
+async fn adopt(item: Detected, name: Option<String>) -> CmdResult<AdoptResult> {
     blocking(move || {
         let m = manager()?;
-        let v = detect::adopt(&m, &item, name.as_deref().filter(|s| !s.is_empty()))?;
+        let r = detect::adopt_detected(&m, &item, name.as_deref().filter(|s| !s.is_empty()))?;
         let _ = activate::reshim(&m, &activate::cli_path());
-        Ok(v)
+        Ok(AdoptResult {
+            version: r.0,
+            set_global: r.1,
+        })
     })
     .await
 }
