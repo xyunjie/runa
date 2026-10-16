@@ -1022,6 +1022,19 @@ mod tests {
         }
     }
 
+    /// Fake node install in the platform's layout: (exe, bin dir).
+    /// Unix: `<home>/bin/node`; Windows: `<home>\\node.exe`.
+    fn fake_node(home: &Path, version: &str) -> (PathBuf, PathBuf) {
+        let bin = if cfg!(windows) {
+            home.to_path_buf()
+        } else {
+            home.join("bin")
+        };
+        let exe_path = bin.join(if cfg!(windows) { "node.exe" } else { "node" });
+        exe(&exe_path, &format!("#!/bin/sh\necho v{version}\n"));
+        (exe_path, bin)
+    }
+
     fn mgr(t: &Path) -> Manager {
         Manager::with_paths(crate::Paths::with_root(t.join("runa"))).unwrap()
     }
@@ -1233,19 +1246,19 @@ mod tests {
         assert!(cached_only(&m).is_none());
     }
 
-    #[cfg(unix)]
     #[test]
     fn adopt_is_registry_only_and_disabled_is_skipped() {
         let t = tempfile::tempdir().unwrap();
         let m = mgr(t.path());
         let home = t.path().join("rt").join("node-v20.1.0");
-        exe(&home.join("bin").join("node"), "#!/bin/sh\necho v20.1.0\n");
+        std::fs::create_dir_all(&home).unwrap();
         let home = std::fs::canonicalize(&home).unwrap();
+        let (node_exe, bin) = fake_node(&home, "20.1.0");
         let d = Detected {
             tool: "node".into(),
             version: "20.1.0".into(),
-            exe: home.join("bin/node"),
-            found_in: home.join("bin"),
+            exe: node_exe,
+            found_in: bin.clone(),
             home: home.clone(),
             via: "PATH".into(),
             provider: "manual".into(),
@@ -1264,12 +1277,12 @@ mod tests {
         );
         let r = m.receipt("node", "20.1.0").unwrap();
         assert_eq!(r.home.as_deref(), Some(home.as_path()));
-        assert_eq!(r.bin_dirs, vec![home.join("bin")]);
+        assert_eq!(r.bin_dirs, vec![bin.clone()]);
         assert_eq!(r.provider.as_deref(), Some("manual"));
         assert!(adopt(&m, &d, Some("other")).is_err(), "same home twice");
         assert_eq!(m.installed("node"), vec!["20.1.0".to_string()]);
         assert_eq!(m.match_installed("node", "20"), Some("20.1.0".into()));
-        assert_eq!(m.bin_dirs("node", "20.1.0"), vec![home.join("bin")]);
+        assert_eq!(m.bin_dirs("node", "20.1.0"), vec![bin.clone()]);
         assert!(m.all_commands().contains(&"node".to_string()));
         let mut items = vec![d.clone()];
         annotate(&m, &mut items);
@@ -1287,7 +1300,7 @@ mod tests {
         let r = m.resolve("node", t.path()).unwrap();
         assert_eq!(r.version, None);
         let plan = m.env_plan(t.path(), &[]).unwrap();
-        assert!(!plan.paths.contains(&home.join("bin")));
+        assert!(!plan.paths.contains(&bin));
         annotate(&m, &mut items);
         assert!(items[0].disabled);
         m.set_disabled("node", "20.1.0", false, t.path()).unwrap();
@@ -1411,20 +1424,19 @@ mod tests {
         assert!(m.installed("python").is_empty());
     }
 
-    // Uses a Unix layout (bin/node shell script); Windows node lives at home\node.exe.
-    #[cfg(unix)]
     #[test]
     fn adopting_the_system_default_makes_it_runa_global() {
         let t = tempfile::tempdir().unwrap();
         let m = mgr(t.path());
         let home = t.path().join("rt").join("node-v21.0.0");
-        exe(&home.join("bin/node"), "#!/bin/sh\necho v21.0.0\n");
+        std::fs::create_dir_all(&home).unwrap();
         let home = std::fs::canonicalize(&home).unwrap();
+        let (node_exe, bin) = fake_node(&home, "21.0.0");
         let mk = |default: bool, ver: &str| Detected {
             tool: "node".into(),
             version: ver.into(),
-            exe: home.join("bin/node"),
-            found_in: home.join("bin"),
+            exe: node_exe.clone(),
+            found_in: bin.clone(),
             home: home.clone(),
             via: "PATH".into(),
             provider: "manual".into(),

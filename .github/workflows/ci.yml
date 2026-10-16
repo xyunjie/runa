@@ -28,7 +28,7 @@ jobs:
       - name: clippy (core + cli)
         run: cargo clippy -p runa-core -p runa-cli --all-targets -- -D warnings
       - name: test (core + cli)
-        run: cargo test -p runa-core -p runa-cli
+        run: cargo test -p runa-core -p runa-cli --no-fail-fast
       - name: smoke test (install node, switch versions)
         shell: bash
         env:
