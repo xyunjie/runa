@@ -178,16 +178,7 @@ pub fn project_directory(dir: &Path) -> Result<PathBuf> {
 
 /// Strip the `\\?\` prefix Windows' canonicalize adds.
 fn dunce(p: PathBuf) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let s = p.display().to_string();
-        if let Some(rest) = s.strip_prefix(r"\\?\") {
-            if !rest.starts_with("UNC") {
-                return PathBuf::from(rest);
-            }
-        }
-    }
-    p
+    crate::platform::strip_verbatim(p)
 }
 
 fn within(root: &Path, p: &Path) -> bool {

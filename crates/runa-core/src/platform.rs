@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Target platform in runa's naming: os = linux | macos | windows, arch = x64 | arm64.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,5 +121,136 @@ pub fn remove_link(p: &Path) -> std::io::Result<()> {
         Ok(_) => std::fs::remove_file(p).or_else(|_| std::fs::remove_dir(p)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
+    }
+}
+
+/// `std::fs::canonicalize` without the `\\?\` verbatim prefix Windows adds (UNC paths
+/// are kept verbatim), falling back to the path itself when it does not exist.
+pub fn canonicalize(p: &Path) -> PathBuf {
+    strip_verbatim(std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
+}
+
+/// Remove a `\\?\C:\` verbatim prefix (no-op elsewhere).
+pub fn strip_verbatim(p: PathBuf) -> PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        if !rest.starts_with("UNC") {
+            return PathBuf::from(rest.to_string());
+        }
+    }
+    p
+}
+
+/// Comparison key for a path: `/` separators, no verbatim prefix or trailing separator,
+/// and ASCII lower-case when the platform's file system is case-insensitive (Windows).
+pub fn path_key(p: &Path) -> String {
+    path_key_for(p, cfg!(windows))
+}
+
+/// [`path_key`] with explicit case folding (testable on any platform).
+pub fn path_key_for(p: &Path, fold_case: bool) -> String {
+    let s = p.to_string_lossy();
+    let s = s.strip_prefix(r"\\?\").unwrap_or(&s).replace('\\', "/");
+    let mut s = if fold_case { s.to_ascii_lowercase() } else { s };
+    while s.len() > 1 && s.ends_with('/') && !s.ends_with(":/") {
+        s.pop();
+    }
+    s
+}
+
+/// Same path on this platform (case-insensitive on Windows; separators normalized).
+pub fn same_path(a: &Path, b: &Path) -> bool {
+    path_key(a) == path_key(b)
+}
+
+/// `p` is `root` or inside it, using [`path_key`] semantics.
+pub fn path_within(p: &Path, root: &Path) -> bool {
+    let (p, r) = (path_key(p), path_key(root));
+    p == r || (p.starts_with(&r) && (r.ends_with('/') || p[r.len()..].starts_with('/')))
+}
+
+/// Executable extensions tried for a bare command name on Windows: `PATHEXT` (only the
+/// ones `CreateProcess` can start directly) or `.exe .cmd .bat .com`.
+pub fn exe_extensions() -> Vec<String> {
+    let fallback = || vec![".exe".into(), ".cmd".into(), ".bat".into(), ".com".into()];
+    let Some(v) = std::env::var_os("PATHEXT") else {
+        return fallback();
+    };
+    let exts: Vec<String> = v
+        .to_string_lossy()
+        .split(';')
+        .map(|e| e.trim().to_ascii_lowercase())
+        .filter(|e| matches!(e.as_str(), ".exe" | ".cmd" | ".bat" | ".com"))
+        .collect();
+    if exts.is_empty() {
+        fallback()
+    } else {
+        exts
+    }
+}
+
+/// File names to look for when searching `exe` in a directory (`node` -> `node.exe`,
+/// `node.cmd`, ... on Windows; unchanged elsewhere or when it already has an extension).
+pub fn exe_candidates(exe: &str) -> Vec<String> {
+    if cfg!(windows) && Path::new(exe).extension().is_none() {
+        exe_extensions()
+            .iter()
+            .map(|e| format!("{exe}{e}"))
+            .collect()
+    } else {
+        vec![exe.to_string()]
+    }
+}
+
+/// Command name without a Windows executable / script extension (`java.exe` -> `java`,
+/// `npm.cmd` -> `npm`), case-insensitively; other names are returned unchanged.
+pub fn bare_name(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    for ext in [".exe", ".cmd", ".bat", ".com", ".ps1"] {
+        if lower.len() > ext.len() && lower.ends_with(ext) {
+            return name[..name.len() - ext.len()].to_string();
+        }
+    }
+    name.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_keys_and_containment() {
+        let k = |s: &str| path_key_for(Path::new(s), true);
+        assert_eq!(k(r"\\?\C:\Program Files\Go\"), "c:/program files/go");
+        assert_eq!(k("C:/"), "c:/");
+        assert_eq!(path_key_for(Path::new("/Users/A/"), false), "/Users/A");
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"\\?\C:\x")),
+            PathBuf::from(r"C:\x")
+        );
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"\\?\UNC\srv\s")),
+            PathBuf::from(r"\\?\UNC\srv\s")
+        );
+        let root = Path::new("/a").join("b");
+        assert!(path_within(&root.join("c"), &root));
+        assert!(path_within(&root, &root));
+        assert!(!path_within(Path::new("/a/bc"), &root));
+    }
+
+    #[test]
+    fn bare_names() {
+        assert_eq!(bare_name("java.exe"), "java");
+        assert_eq!(bare_name("NPM.CMD"), "NPM");
+        assert_eq!(bare_name("python3"), "python3");
+        assert_eq!(bare_name(".exe"), ".exe");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_candidates_and_case() {
+        assert!(exe_candidates("node").iter().any(|n| n == "node.exe"));
+        assert_eq!(exe_candidates("node.exe"), vec!["node.exe".to_string()]);
+        assert!(same_path(Path::new(r"C:\Go"), Path::new("c:/go/")));
     }
 }

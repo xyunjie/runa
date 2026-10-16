@@ -102,10 +102,9 @@ impl Paths {
 
     /// True when `p` lives inside the runa home (used to skip our own shims in detection).
     pub fn contains(&self, p: &Path) -> bool {
-        let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-        [&self.root, &self.home].iter().any(|r| {
-            let r = std::fs::canonicalize(r).unwrap_or_else(|_| r.to_path_buf());
-            p.starts_with(&r)
-        })
+        let p = crate::platform::canonicalize(p);
+        [&self.root, &self.home]
+            .iter()
+            .any(|r| crate::platform::path_within(&p, &crate::platform::canonicalize(r)))
     }
 }

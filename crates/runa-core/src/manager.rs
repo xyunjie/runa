@@ -540,9 +540,7 @@ impl Manager {
                         InstalledVersion {
                             provider: r.as_ref().and_then(|r| r.provider.clone()).or_else(|| {
                                 adopted.then(|| {
-                                    crate::detect::classify(
-                                        &std::fs::canonicalize(&home).unwrap_or(home.clone()),
-                                    )
+                                    crate::detect::classify(&platform::canonicalize(&home))
                                     .0
                                 })
                             }),
@@ -593,14 +591,7 @@ pub fn dir_size(p: &Path) -> u64 {
 
 /// Look for `exe` in `dirs` (adds .exe/.cmd/.bat on Windows).
 pub fn find_exe_in(dirs: &[PathBuf], exe: &str) -> Option<PathBuf> {
-    let names: Vec<String> = if cfg!(windows) && Path::new(exe).extension().is_none() {
-        ["exe", "cmd", "bat", "com"]
-            .iter()
-            .map(|e| format!("{exe}.{e}"))
-            .collect()
-    } else {
-        vec![exe.to_string()]
-    };
+    let names = platform::exe_candidates(exe);
     for d in dirs {
         for n in &names {
             let p = d.join(n);
