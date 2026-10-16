@@ -1411,6 +1411,8 @@ mod tests {
         assert!(m.installed("python").is_empty());
     }
 
+    // Uses a Unix layout (bin/node shell script); Windows node lives at home\node.exe.
+    #[cfg(unix)]
     #[test]
     fn adopting_the_system_default_makes_it_runa_global() {
         let t = tempfile::tempdir().unwrap();
