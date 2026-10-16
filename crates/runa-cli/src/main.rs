@@ -56,9 +56,15 @@ enum Cmd {
         dry_run: bool,
     },
     /// 禁用某个版本（仍保留在列表中，但不会被解析、生成 shim 或加入 PATH）
-    Disable { tool: String, version: Option<String> },
+    Disable {
+        tool: String,
+        version: Option<String>,
+    },
     /// 重新启用被禁用的版本
-    Enable { tool: String, version: Option<String> },
+    Enable {
+        tool: String,
+        version: Option<String>,
+    },
     /// 设置版本：默认写入当前目录 .tool-versions，-g 写入全局
     Use {
         tool: String,
@@ -495,7 +501,10 @@ fn run(cli: Cli) -> Result<i32> {
                     let mut extra = match &r {
                         Some(r) if r.is_adopted() => format!(
                             "  (已接管{}: {})",
-                            r.provider.as_deref().map(|p| format!(" · {p}")).unwrap_or_default(),
+                            r.provider
+                                .as_deref()
+                                .map(|p| format!(" · {p}"))
+                                .unwrap_or_default(),
                             m.runtime_root(&t, &v).display()
                         ),
                         _ => String::new(),
@@ -652,13 +661,26 @@ fn run(cli: Cli) -> Result<i32> {
                     "{verb} {} {}: {} → {}{}",
                     a.tool,
                     a.version,
-                    a.old_origin.as_deref().map(|p| p.display().to_string()).unwrap_or_default(),
-                    a.home.as_deref().map(|p| p.display().to_string()).unwrap_or_else(|| "-".into()),
-                    a.provider.as_deref().map(|p| format!(" [{p}]")).unwrap_or_default()
+                    a.old_origin
+                        .as_deref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default(),
+                    a.home
+                        .as_deref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "-".into()),
+                    a.provider
+                        .as_deref()
+                        .map(|p| format!(" [{p}]"))
+                        .unwrap_or_default()
                 );
                 println!("    {}", a.note);
                 for p in &a.removes {
-                    println!("    {} 删除链接 {}", if dry_run { "将" } else { "已" }, p.display());
+                    println!(
+                        "    {} 删除链接 {}",
+                        if dry_run { "将" } else { "已" },
+                        p.display()
+                    );
                 }
             }
             if !dry_run && !acts.is_empty() {
@@ -872,7 +894,13 @@ fn setup(_m: &Manager, shell: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn toggle(m: &Manager, here: &Path, tool: &str, version: Option<String>, disable: bool) -> Result<()> {
+fn toggle(
+    m: &Manager,
+    here: &Path,
+    tool: &str,
+    version: Option<String>,
+    disable: bool,
+) -> Result<()> {
     let verb = if disable { "disable" } else { "enable" };
     let (tool, version) = split_tool(tool, version);
     let version = version.ok_or_else(|| anyhow!("用法: runa {verb} <工具> <版本>"))?;
@@ -881,7 +909,10 @@ fn toggle(m: &Manager, here: &Path, tool: &str, version: Option<String>, disable
         eprintln!("警告: {w}");
     }
     reshim_quiet(m);
-    eprintln!("✓ 已{} {tool} {version}", if disable { "禁用" } else { "启用" });
+    eprintln!(
+        "✓ 已{} {tool} {version}",
+        if disable { "禁用" } else { "启用" }
+    );
     Ok(())
 }
 

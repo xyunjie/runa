@@ -218,7 +218,10 @@ impl Manager {
                 resolver::find_spec(&tool, cwd, &env, &self.paths.global_tool_versions())
             {
                 let hit = spec.specs.iter().any(|s| {
-                    s == version || VersionReq::parse(s).best(std::iter::once(&version.to_string())).is_some()
+                    s == version
+                        || VersionReq::parse(s)
+                            .best(std::iter::once(&version.to_string()))
+                            .is_some()
                 });
                 if hit && !matches!(spec.source, resolver::Source::Global(_)) {
                     warnings.push(format!(
@@ -536,7 +539,12 @@ impl Manager {
                         let home = self.runtime_root(&tool, &v);
                         InstalledVersion {
                             provider: r.as_ref().and_then(|r| r.provider.clone()).or_else(|| {
-                                adopted.then(|| crate::detect::classify(&std::fs::canonicalize(&home).unwrap_or(home.clone())).0)
+                                adopted.then(|| {
+                                    crate::detect::classify(
+                                        &std::fs::canonicalize(&home).unwrap_or(home.clone()),
+                                    )
+                                    .0
+                                })
                             }),
                             path: home,
                             source: r

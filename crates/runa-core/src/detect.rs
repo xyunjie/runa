@@ -105,10 +105,14 @@ fn candidate_dirs(m: &Manager, tool: &str) -> Vec<(PathBuf, String)> {
 }
 
 fn brew_cellars() -> Vec<PathBuf> {
-    ["/opt/homebrew/Cellar", "/usr/local/Cellar", "/home/linuxbrew/.linuxbrew/Cellar"]
-        .iter()
-        .map(PathBuf::from)
-        .collect()
+    [
+        "/opt/homebrew/Cellar",
+        "/usr/local/Cellar",
+        "/home/linuxbrew/.linuxbrew/Cellar",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect()
 }
 
 /// Real (non-symlink, non-hidden) child directories. Symlinked aliases such as sdkman's
@@ -153,7 +157,11 @@ fn store_roots(user_home: &Path, tool: &str) -> Vec<(PathBuf, &'static str, &'st
         "java" => vec![
             (h.join(".sdkman/candidates/java"), "sdkman", ""),
             (h.join(".asdf/installs/java"), "asdf", ""),
-            (h.join("Library/Java/JavaVirtualMachines"), "常见目录", "Contents/Home"),
+            (
+                h.join("Library/Java/JavaVirtualMachines"),
+                "常见目录",
+                "Contents/Home",
+            ),
         ],
         "go" => vec![
             (h.join(".sdkman/candidates/go"), "sdkman", ""),
@@ -184,7 +192,11 @@ fn store_scan_dirs(user_home: &Path, tool: &str, cellars: &[PathBuf]) -> Vec<Pat
     for c in cellars {
         v.push(c.clone());
         for f in real_children(c) {
-            let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let name = f
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             if brew_formula_matches(tool, &name).is_some() {
                 v.push(f);
             }
@@ -204,12 +216,20 @@ fn store_bin_dirs(user_home: &Path, tool: &str, cellars: &[PathBuf]) -> Vec<(Pat
     }
     for c in cellars {
         for f in real_children(c) {
-            let name = f.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let name = f
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             let Some(suffix) = brew_formula_matches(tool, &name) else {
                 continue;
             };
             for keg in real_children(&f) {
-                let home = if suffix.is_empty() { keg } else { keg.join(suffix) };
+                let home = if suffix.is_empty() {
+                    keg
+                } else {
+                    keg.join(suffix)
+                };
                 out.push((home.join("bin"), "homebrew".to_string()));
             }
         }
@@ -256,7 +276,10 @@ pub fn classify(home: &Path) -> (String, Option<String>) {
 /// Path segments after `marker` (e.g. `/.nvm/versions/node/` -> `["v20.1.0", "bin"]`).
 pub(crate) fn segments_after<'a>(s: &'a str, marker: &str) -> Vec<&'a str> {
     match s.find(marker) {
-        Some(i) => s[i + marker.len()..].split('/').filter(|x| !x.is_empty()).collect(),
+        Some(i) => s[i + marker.len()..]
+            .split('/')
+            .filter(|x| !x.is_empty())
+            .collect(),
         None => vec![],
     }
 }
@@ -344,7 +367,10 @@ fn scan(m: &Manager) -> Vec<Detected> {
 /// Ask the runtime itself for its installation root. Works through stubs and shims.
 pub(crate) fn query_home(tool: &str, exe: &Path) -> Option<PathBuf> {
     let (args, key): (&[&str], Option<&str>) = match tool {
-        "java" => (&["-XshowSettings:properties", "-version"], Some("java.home = ")),
+        "java" => (
+            &["-XshowSettings:properties", "-version"],
+            Some("java.home = "),
+        ),
         "python" => (&["-c", "import sys; print(sys.base_prefix)"], None),
         "node" => (&["-p", "process.execPath"], None),
         "go" => (&["env", "GOROOT"], None),
@@ -352,7 +378,11 @@ pub(crate) fn query_home(tool: &str, exe: &Path) -> Option<PathBuf> {
     };
     let out = run_version(exe, args)?;
     let line = match key {
-        Some(k) => out.lines().find_map(|l| l.trim().strip_prefix(k))?.trim().to_string(),
+        Some(k) => out
+            .lines()
+            .find_map(|l| l.trim().strip_prefix(k))?
+            .trim()
+            .to_string(),
         None => out.lines().next()?.trim().to_string(),
     };
     if line.is_empty() {
@@ -361,7 +391,11 @@ pub(crate) fn query_home(tool: &str, exe: &Path) -> Option<PathBuf> {
     let mut p = PathBuf::from(line);
     if tool == "node" {
         // execPath is the binary: <root>/bin/node
-        p = std::fs::canonicalize(&p).ok()?.parent()?.parent()?.to_path_buf();
+        p = std::fs::canonicalize(&p)
+            .ok()?
+            .parent()?
+            .parent()?
+            .to_path_buf();
     }
     let p = std::fs::canonicalize(&p).unwrap_or(p);
     p.is_dir().then_some(p)
@@ -527,7 +561,13 @@ fn scan_and_save(m: &Manager, fp: Fingerprint) -> DetectReport {
     report(m, c.items, false, false, c.created_at)
 }
 
-fn report(m: &Manager, mut items: Vec<Detected>, cached: bool, stale: bool, at: u64) -> DetectReport {
+fn report(
+    m: &Manager,
+    mut items: Vec<Detected>,
+    cached: bool,
+    stale: bool,
+    at: u64,
+) -> DetectReport {
     annotate(m, &mut items);
     DetectReport {
         items,
@@ -552,7 +592,11 @@ pub fn annotate(m: &Manager, items: &mut [Detected]) {
             if !r.is_adopted() {
                 continue;
             }
-            let hit = r.home.as_deref().map(|h| canon(h) == d.home).unwrap_or(false)
+            let hit = r
+                .home
+                .as_deref()
+                .map(|h| canon(h) == d.home)
+                .unwrap_or(false)
                 || r.origin.as_deref().is_some_and(|o| {
                     canon(o) == d.home || o == d.found_in || Some(o) == path_dir.as_deref()
                 });
@@ -675,7 +719,8 @@ pub fn migrate(m: &Manager, dry_run: bool) -> Result<Vec<MigrationAction>> {
             let exes = plugin.detect_exes();
             let mut resolved: Option<(PathBuf, PathBuf)> = None;
             for exe in &exes {
-                let Some(p) = legacy_exe(&dir, r.origin.as_deref(), r.home.as_deref(), exe, &plugin)
+                let Some(p) =
+                    legacy_exe(&dir, r.origin.as_deref(), r.home.as_deref(), exe, &plugin)
                 else {
                     continue;
                 };
@@ -699,14 +744,18 @@ pub fn migrate(m: &Manager, dry_run: bool) -> Result<Vec<MigrationAction>> {
             };
             match resolved {
                 Some((home, _)) if taken.contains(&home) => {
-                    act.note = format!("真实位置 {} 已被其它版本接管，删除重复记录", home.display());
+                    act.note =
+                        format!("真实位置 {} 已被其它版本接管，删除重复记录", home.display());
                     act.home = Some(home);
                 }
                 Some((home, bin)) => {
                     let (provider, formula) = classify(&home);
                     act.action = "convert".into();
                     act.note = if bad_origin {
-                        format!("旧记录指向 {}，已重新定位到真实安装", r.origin.as_deref().unwrap_or(Path::new("?")).display())
+                        format!(
+                            "旧记录指向 {}，已重新定位到真实安装",
+                            r.origin.as_deref().unwrap_or(Path::new("?")).display()
+                        )
                     } else {
                         "符号链接接管转换为登记接管".into()
                     };
@@ -728,7 +777,8 @@ pub fn migrate(m: &Manager, dry_run: bool) -> Result<Vec<MigrationAction>> {
                     }
                 }
                 None => {
-                    act.note = "无法定位真实安装位置（可能只是系统存根或已被删除），删除该记录".into();
+                    act.note =
+                        "无法定位真实安装位置（可能只是系统存根或已被删除），删除该记录".into();
                 }
             }
             if act.action == "drop" && !dry_run {
@@ -800,7 +850,10 @@ pub(crate) fn remove_artifacts(dir: &Path) -> Result<()> {
     let bin = dir.join("bin");
     for e in std::fs::read_dir(&bin).into_iter().flatten().flatten() {
         let p = e.path();
-        if std::fs::symlink_metadata(&p).map(|m| m.file_type().is_symlink()).unwrap_or(false) {
+        if std::fs::symlink_metadata(&p)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
             std::fs::remove_file(&p)?;
         }
     }
@@ -865,26 +918,42 @@ mod tests {
     #[test]
     fn provider_classification() {
         let c = |p: &str| classify(Path::new(p));
-        assert_eq!(c("/opt/homebrew/Cellar/node/26.8.1"), ("homebrew".into(), Some("node".into())));
+        assert_eq!(
+            c("/opt/homebrew/Cellar/node/26.8.1"),
+            ("homebrew".into(), Some("node".into()))
+        );
         assert_eq!(
             c("/usr/local/Cellar/openjdk@17/17.0.9/libexec/openjdk.jdk/Contents/Home"),
             ("homebrew".into(), Some("openjdk@17".into()))
         );
         assert_eq!(
-            c("/opt/homebrew/Cellar/python@3.12/3.12.4/Frameworks/Python.framework/Versions/3.12").1,
+            c("/opt/homebrew/Cellar/python@3.12/3.12.4/Frameworks/Python.framework/Versions/3.12")
+                .1,
             Some("python@3.12".into())
         );
         assert_eq!(c("/Users/a/.nvm/versions/node/v24.13.0").0, "nvm");
         assert_eq!(c("/Users/a/.pyenv/versions/3.12.1").0, "pyenv");
         assert_eq!(c("/Users/a/.sdkman/candidates/java/21.0.2-tem").0, "sdkman");
         assert_eq!(c("/Users/a/.asdf/installs/golang/1.22.0/go").0, "asdf");
-        assert_eq!(c("/Users/a/.local/share/fnm/node-versions/v22.1.0/installation").0, "fnm");
-        assert_eq!(c("/Users/a/Library/Java/JavaVirtualMachines/jbr-21.0.11/Contents/Home").0, "manual");
-        assert_eq!(c("/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home").0, "manual");
+        assert_eq!(
+            c("/Users/a/.local/share/fnm/node-versions/v22.1.0/installation").0,
+            "fnm"
+        );
+        assert_eq!(
+            c("/Users/a/Library/Java/JavaVirtualMachines/jbr-21.0.11/Contents/Home").0,
+            "manual"
+        );
+        assert_eq!(
+            c("/Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home").0,
+            "manual"
+        );
         assert_eq!(c("/usr/local/go").0, "manual");
         assert_eq!(c("/usr").0, "system");
         assert_eq!(c("/usr/lib/jvm/java-17").0, "system");
-        assert_eq!(c("/System/Library/Frameworks/Python.framework/Versions/2.7").0, "system");
+        assert_eq!(
+            c("/System/Library/Frameworks/Python.framework/Versions/2.7").0,
+            "system"
+        );
         assert_eq!(
             c("/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9").0,
             "system"
@@ -905,9 +974,15 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(cand.join("21.0.2-tem"), cand.join("current")).unwrap();
         let cellar = h.join("Cellar");
-        std::fs::create_dir_all(cellar.join("openjdk@17/17.0.9/libexec/openjdk.jdk/Contents/Home/bin")).unwrap();
+        std::fs::create_dir_all(
+            cellar.join("openjdk@17/17.0.9/libexec/openjdk.jdk/Contents/Home/bin"),
+        )
+        .unwrap();
         std::fs::create_dir_all(cellar.join("wget/1.0/bin")).unwrap();
-        std::fs::create_dir_all(h.join("Library/Application Support/fnm/node-versions/v22.1.0/installation/bin")).unwrap();
+        std::fs::create_dir_all(
+            h.join("Library/Application Support/fnm/node-versions/v22.1.0/installation/bin"),
+        )
+        .unwrap();
         let dirs: Vec<PathBuf> = store_bin_dirs(h, "java", std::slice::from_ref(&cellar))
             .into_iter()
             .map(|(d, _)| d)
@@ -915,10 +990,14 @@ mod tests {
         assert!(dirs.contains(&cand.join("21.0.2-tem/bin")));
         assert!(dirs.contains(&cand.join("17.0.9-tem/bin")));
         assert!(!dirs.iter().any(|d| d.starts_with(cand.join("current"))));
-        assert!(dirs.contains(&cellar.join("openjdk@17/17.0.9/libexec/openjdk.jdk/Contents/Home/bin")));
+        assert!(
+            dirs.contains(&cellar.join("openjdk@17/17.0.9/libexec/openjdk.jdk/Contents/Home/bin"))
+        );
         assert!(!dirs.iter().any(|d| d.starts_with(cellar.join("wget"))));
         let node: Vec<_> = store_bin_dirs(h, "node", &[]).into_iter().collect();
-        assert!(node.iter().any(|(d, via)| via == "fnm" && d.ends_with("v22.1.0/installation/bin")));
+        assert!(node
+            .iter()
+            .any(|(d, via)| via == "fnm" && d.ends_with("v22.1.0/installation/bin")));
     }
 
     #[test]
@@ -936,7 +1015,10 @@ mod tests {
             items: vec![],
         };
         assert!(c.is_fresh(&fp, 1_000 + 60));
-        assert!(!c.is_fresh(&fp, 1_000 + CACHE_MAX_AGE_SECS + 1), "older than 24h");
+        assert!(
+            !c.is_fresh(&fp, 1_000 + CACHE_MAX_AGE_SECS + 1),
+            "older than 24h"
+        );
         let mut moved = fp.clone();
         moved.dirs[0].1 = 11;
         assert!(!c.is_fresh(&moved, 1_001), "directory mtime changed");
@@ -991,7 +1073,10 @@ mod tests {
             disabled: false,
         };
         assert_eq!(adopt(&m, &d, None).unwrap(), "20.1.0");
-        assert!(std::fs::symlink_metadata(m.paths.install_dir("node", "20.1.0")).is_err(), "no link");
+        assert!(
+            std::fs::symlink_metadata(m.paths.install_dir("node", "20.1.0")).is_err(),
+            "no link"
+        );
         let r = m.receipt("node", "20.1.0").unwrap();
         assert_eq!(r.home.as_deref(), Some(home.as_path()));
         assert_eq!(r.bin_dirs, vec![home.join("bin")]);
@@ -1021,9 +1106,15 @@ mod tests {
         annotate(&m, &mut items);
         assert!(items[0].disabled);
         m.set_disabled("node", "20.1.0", false, t.path()).unwrap();
-        assert_eq!(m.resolve("node", t.path()).unwrap().version.as_deref(), Some("20.1.0"));
+        assert_eq!(
+            m.resolve("node", t.path()).unwrap().version.as_deref(),
+            Some("20.1.0")
+        );
         // update_current_link points straight at the real home
-        assert_eq!(std::fs::read_link(m.paths.current().join("node")).unwrap(), home);
+        assert_eq!(
+            std::fs::read_link(m.paths.current().join("node")).unwrap(),
+            home
+        );
     }
 
     #[cfg(unix)]
@@ -1052,7 +1143,8 @@ mod tests {
         let nd = m.paths.install_dir("node", "20.1.0");
         std::fs::create_dir_all(nd.join("bin")).unwrap();
         std::os::unix::fs::symlink(node_home.join("bin/node"), nd.join("bin/node")).unwrap();
-        installer::write_receipt(&m.paths, &legacy("node", "20.1.0", &node_home.join("bin"))).unwrap();
+        installer::write_receipt(&m.paths, &legacy("node", "20.1.0", &node_home.join("bin")))
+            .unwrap();
         // a broken record pointing at a dir without any runtime
         let empty = t.path().join("nothing");
         std::fs::create_dir_all(&empty).unwrap();
@@ -1061,7 +1153,10 @@ mod tests {
 
         let dry = migrate(&m, true).unwrap();
         assert_eq!(dry.len(), 3);
-        assert!(std::fs::symlink_metadata(m.paths.install_dir("go", "1.22.0")).is_ok(), "dry run changes nothing");
+        assert!(
+            std::fs::symlink_metadata(m.paths.install_dir("go", "1.22.0")).is_ok(),
+            "dry run changes nothing"
+        );
         let acts = migrate(&m, false).unwrap();
         let find = |t: &str, v: &str| acts.iter().find(|a| a.tool == t && a.version == v).unwrap();
         assert_eq!(find("go", "1.22.0").action, "convert");
@@ -1076,7 +1171,10 @@ mod tests {
         assert_eq!(r.home.as_deref(), Some(go_home.as_path()));
         assert_eq!(r.bin_dirs, vec![go_home.join("bin")]);
         assert_eq!(r.installed_at, 1);
-        assert_eq!(m.receipt("node", "20.1.0").unwrap().home.as_deref(), Some(node_home.as_path()));
+        assert_eq!(
+            m.receipt("node", "20.1.0").unwrap().home.as_deref(),
+            Some(node_home.as_path())
+        );
         assert!(m.receipt("go", "0.0.1").is_none());
         assert_eq!(m.installed("go"), vec!["1.22.0".to_string()]);
         assert!(migrate(&m, false).unwrap().is_empty(), "idempotent");

@@ -129,7 +129,9 @@ fn writable(dir: &Path) -> bool {
 fn dangerous(p: &Path) -> bool {
     p.components().count() < 3
         || detect::is_system_prefix(p)
-        || dirs::home_dir().map(|h| h == p || h.starts_with(p)).unwrap_or(false)
+        || dirs::home_dir()
+            .map(|h| h == p || h.starts_with(p))
+            .unwrap_or(false)
         || classify(p).0 == "system"
 }
 
@@ -207,12 +209,18 @@ pub fn plan(m: &Manager, tool: &str, version: &str, mode: Mode) -> Result<Uninst
         }
         Mode::Purge => {}
     }
-    let home = home.ok_or_else(|| anyhow!("{tool} {version} 的安装位置未知，只能移除管理（--forget）"))?;
+    let home =
+        home.ok_or_else(|| anyhow!("{tool} {version} 的安装位置未知，只能移除管理（--forget）"))?;
     let hs = home.to_string_lossy().replace('\\', "/");
     let user_home = dirs::home_dir().unwrap_or_default();
     let prefix_of = |marker: &str| -> PathBuf {
         // "/Users/x/.nvm/versions/..." with marker "/.nvm/" -> "/Users/x/.nvm"
-        PathBuf::from(&hs[..hs.find(marker).map(|i| i + marker.len() - 1).unwrap_or(hs.len())])
+        PathBuf::from(
+            &hs[..hs
+                .find(marker)
+                .map(|i| i + marker.len() - 1)
+                .unwrap_or(hs.len())],
+        )
     };
     p.kind = PlanKind::ProviderCommand;
     match provider.as_str() {
@@ -223,11 +231,18 @@ pub fn plan(m: &Manager, tool: &str, version: &str, mode: Mode) -> Result<Uninst
                 .or(cls_formula)
                 .ok_or_else(|| anyhow!("无法确定 Homebrew formula"))?;
             safe_id(&formula)?;
-            p.command = Some(vec![find_tool(m, "brew", &[]), "uninstall".into(), formula.clone()]);
+            p.command = Some(vec![
+                find_tool(m, "brew", &[]),
+                "uninstall".into(),
+                formula.clone(),
+            ]);
             p.command_line = Some(format!("brew uninstall {}", q(&formula)));
         }
         "nvm" => {
-            let id = segments_after(&hs, "/.nvm/versions/node/").first().copied().unwrap_or("");
+            let id = segments_after(&hs, "/.nvm/versions/node/")
+                .first()
+                .copied()
+                .unwrap_or("");
             let id = safe_id(id)?;
             let nvm_dir = prefix_of("/.nvm/");
             let script = format!(
@@ -239,10 +254,16 @@ pub fn plan(m: &Manager, tool: &str, version: &str, mode: Mode) -> Result<Uninst
             p.command_line = Some(format!("bash -c {}", q(&script)));
         }
         "pyenv" => {
-            let id = safe_id(segments_after(&hs, "/.pyenv/versions/").first().copied().unwrap_or(""))?;
+            let id = safe_id(
+                segments_after(&hs, "/.pyenv/versions/")
+                    .first()
+                    .copied()
+                    .unwrap_or(""),
+            )?;
             let root = prefix_of("/.pyenv/");
             let exe = find_tool(m, "pyenv", &[root.join("bin")]);
-            p.env.push(("PYENV_ROOT".into(), root.display().to_string()));
+            p.env
+                .push(("PYENV_ROOT".into(), root.display().to_string()));
             p.command = Some(vec![exe, "uninstall".into(), "-f".into(), id.into()]);
             p.command_line = Some(format!("pyenv uninstall -f {}", q(id)));
         }
@@ -266,15 +287,29 @@ pub fn plan(m: &Manager, tool: &str, version: &str, mode: Mode) -> Result<Uninst
             let id = safe_id(seg.get(1).copied().unwrap_or(""))?;
             let data = prefix_of("/.asdf/");
             let exe = find_tool(m, "asdf", &[data.join("bin")]);
-            p.env.push(("ASDF_DATA_DIR".into(), data.display().to_string()));
+            p.env
+                .push(("ASDF_DATA_DIR".into(), data.display().to_string()));
             p.command = Some(vec![exe, "uninstall".into(), plugin.into(), id.into()]);
             p.command_line = Some(format!("asdf uninstall {} {}", q(plugin), q(id)));
         }
         "fnm" => {
-            let id = safe_id(segments_after(&hs, "/fnm/node-versions/").first().copied().unwrap_or(""))?;
+            let id = safe_id(
+                segments_after(&hs, "/fnm/node-versions/")
+                    .first()
+                    .copied()
+                    .unwrap_or(""),
+            )?;
             let fnm_dir = PathBuf::from(&hs[..hs.find("/node-versions/").unwrap_or(hs.len())]);
-            let exe = find_tool(m, "fnm", &[user_home.join(".local/share/fnm"), user_home.join(".cargo/bin")]);
-            p.env.push(("FNM_DIR".into(), fnm_dir.display().to_string()));
+            let exe = find_tool(
+                m,
+                "fnm",
+                &[
+                    user_home.join(".local/share/fnm"),
+                    user_home.join(".cargo/bin"),
+                ],
+            );
+            p.env
+                .push(("FNM_DIR".into(), fnm_dir.display().to_string()));
             p.command = Some(vec![exe, "uninstall".into(), id.into()]);
             p.command_line = Some(format!("fnm uninstall {}", q(id)));
         }
@@ -434,19 +469,56 @@ mod tests {
     fn provider_plans() {
         let (_t, m) = mgr();
         adopt_at(&m, "node", "26.8.1", "/opt/homebrew/Cellar/node/26.8.1");
-        adopt_at(&m, "java", "17.0.9", "/opt/homebrew/Cellar/openjdk@17/17.0.9/libexec/openjdk.jdk/Contents/Home");
-        adopt_at(&m, "node", "24.13.0", "/Users/x/.nvm/versions/node/v24.13.0");
+        adopt_at(
+            &m,
+            "java",
+            "17.0.9",
+            "/opt/homebrew/Cellar/openjdk@17/17.0.9/libexec/openjdk.jdk/Contents/Home",
+        );
+        adopt_at(
+            &m,
+            "node",
+            "24.13.0",
+            "/Users/x/.nvm/versions/node/v24.13.0",
+        );
         adopt_at(&m, "python", "3.12.1", "/Users/x/.pyenv/versions/3.12.1");
-        adopt_at(&m, "java", "21.0.2", "/Users/x/.sdkman/candidates/java/21.0.2-tem");
-        adopt_at(&m, "go", "1.22.0", "/Users/x/.asdf/installs/golang/1.22.0/go");
-        adopt_at(&m, "node", "22.1.0", "/Users/x/Library/Application Support/fnm/node-versions/v22.1.0/installation");
-        adopt_at(&m, "python", "3.9.6", "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9");
+        adopt_at(
+            &m,
+            "java",
+            "21.0.2",
+            "/Users/x/.sdkman/candidates/java/21.0.2-tem",
+        );
+        adopt_at(
+            &m,
+            "go",
+            "1.22.0",
+            "/Users/x/.asdf/installs/golang/1.22.0/go",
+        );
+        adopt_at(
+            &m,
+            "node",
+            "22.1.0",
+            "/Users/x/Library/Application Support/fnm/node-versions/v22.1.0/installation",
+        );
+        adopt_at(
+            &m,
+            "python",
+            "3.9.6",
+            "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9",
+        );
 
         let p = purge(&m, "node", "26.8.1");
         assert_eq!(p.kind, PlanKind::ProviderCommand);
         assert_eq!(p.command_line.as_deref(), Some("brew uninstall node"));
-        assert!(p.command.as_ref().unwrap().ends_with(&["uninstall".into(), "node".into()]));
-        assert_eq!(purge(&m, "java", "17.0.9").command_line.as_deref(), Some("brew uninstall openjdk@17"));
+        assert!(p
+            .command
+            .as_ref()
+            .unwrap()
+            .ends_with(&["uninstall".into(), "node".into()]));
+        assert_eq!(
+            purge(&m, "java", "17.0.9").command_line.as_deref(),
+            Some("brew uninstall openjdk@17")
+        );
 
         let p = purge(&m, "node", "24.13.0");
         let line = p.command_line.unwrap();
@@ -455,18 +527,32 @@ mod tests {
 
         let p = purge(&m, "python", "3.12.1");
         assert_eq!(p.command_line.as_deref(), Some("pyenv uninstall -f 3.12.1"));
-        assert!(p.env.contains(&("PYENV_ROOT".into(), "/Users/x/.pyenv".into())));
+        assert!(p
+            .env
+            .contains(&("PYENV_ROOT".into(), "/Users/x/.pyenv".into())));
 
         let line = purge(&m, "java", "21.0.2").command_line.unwrap();
-        assert!(line.contains("SDKMAN_DIR=/Users/x/.sdkman;") && line.contains("sdk uninstall java 21.0.2-tem"), "{line}");
+        assert!(
+            line.contains("SDKMAN_DIR=/Users/x/.sdkman;")
+                && line.contains("sdk uninstall java 21.0.2-tem"),
+            "{line}"
+        );
 
         let p = purge(&m, "go", "1.22.0");
-        assert_eq!(p.command_line.as_deref(), Some("asdf uninstall golang 1.22.0"));
-        assert!(p.env.contains(&("ASDF_DATA_DIR".into(), "/Users/x/.asdf".into())));
+        assert_eq!(
+            p.command_line.as_deref(),
+            Some("asdf uninstall golang 1.22.0")
+        );
+        assert!(p
+            .env
+            .contains(&("ASDF_DATA_DIR".into(), "/Users/x/.asdf".into())));
 
         let p = purge(&m, "node", "22.1.0");
         assert_eq!(p.command_line.as_deref(), Some("fnm uninstall v22.1.0"));
-        assert!(p.env.contains(&("FNM_DIR".into(), "/Users/x/Library/Application Support/fnm".into())));
+        assert!(p.env.contains(&(
+            "FNM_DIR".into(),
+            "/Users/x/Library/Application Support/fnm".into()
+        )));
 
         let p = purge(&m, "python", "3.9.6");
         assert_eq!(p.kind, PlanKind::Refuse);
@@ -510,7 +596,11 @@ mod tests {
         adopt_at(&m, "java", "1.0.0", home);
         let p = purge(&m, "java", "1.0.0");
         if p.needs_root {
-            assert!(p.command_line.as_deref().unwrap().starts_with("sudo rm -rf "));
+            assert!(p
+                .command_line
+                .as_deref()
+                .unwrap()
+                .starts_with("sudo rm -rf "));
             let e = execute(&m, &p).unwrap_err().to_string();
             assert!(e.contains("sudo"), "{e}");
         }

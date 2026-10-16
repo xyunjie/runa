@@ -30,7 +30,10 @@ fn adopted_uninstall_requires_choice_and_dry_run_changes_nothing() {
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("--forget") && out.contains("--purge"), "{out}");
 
-    let o = runa(&home, &["uninstall", "node", "20.1.0", "--purge", "--dry-run"]);
+    let o = runa(
+        &home,
+        &["uninstall", "node", "20.1.0", "--purge", "--dry-run"],
+    );
     assert!(o.status.success());
     let out = String::from_utf8_lossy(&o.stdout);
     assert!(out.contains("rm -rf"), "{out}");
