@@ -37,3 +37,6 @@ pub use settings::Settings;
 
 /// Product name used for directories, env vars and markers.
 pub const APP_NAME: &str = "runa";
+
+#[cfg(test)]
+mod new_runtimes_tests;

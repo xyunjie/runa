@@ -28,6 +28,9 @@ fn providers_of(manager: &str) -> &'static [&'static str] {
         "sdkman" => &["sdkman"],
         "asdf" => &["asdf"],
         "mise" => &["mise"],
+        "rustup" => &["rustup"],
+        "rbenv" => &["rbenv"],
+        "rvm" => &["rvm"],
         _ => &[],
     }
 }
@@ -35,13 +38,17 @@ fn providers_of(manager: &str) -> &'static [&'static str] {
 /// Package ids per install origin.
 fn package_id(manager: &str, origin: &str) -> Option<&'static str> {
     Some(match (manager, origin) {
-        ("nvm" | "fnm" | "pyenv" | "asdf" | "mise", "brew") => match manager {
+        ("nvm" | "fnm" | "pyenv" | "asdf" | "mise" | "rustup" | "rbenv", "brew") => match manager {
             "nvm" => "nvm",
             "fnm" => "fnm",
             "pyenv" => "pyenv",
             "asdf" => "asdf",
+            "rustup" => "rustup",
+            "rbenv" => "rbenv",
             _ => "mise",
         },
+        ("rustup", "winget") => "Rustlang.Rustup",
+        ("rustup", "scoop") => "rustup",
         ("nvm-windows", "winget") => "CoreyButler.NVMforWindows",
         ("fnm", "winget") => "Schniz.fnm",
         ("mise", "winget") => "jdx.mise",
@@ -111,10 +118,10 @@ pub fn origin_of(manager: &str, entry: &Path, data_dir: Option<&Path>) -> String
         "system"
     } else {
         match manager {
-            "nvm" | "sdkman" | "fnm" | "mise" => "script",
-            "pyenv" | "asdf" => {
+            "nvm" | "sdkman" | "fnm" | "mise" | "rustup" | "rvm" => "script",
+            "pyenv" | "asdf" | "rbenv" => {
                 if data_dir.is_some_and(|d| d.join(".git").is_dir()) {
-                    if manager == "asdf" {
+                    if manager != "pyenv" {
                         "git"
                     } else {
                         "script"
@@ -169,6 +176,9 @@ fn version_of(manager: &str, entry: &Path, data_dir: Option<&Path>) -> Option<St
             )?;
             version_token(&out)
         }
+        "rvm" => std::fs::read_to_string(data_dir?.join("VERSION"))
+            .ok()
+            .and_then(|s| version_token(&s)),
         "sdkman" => std::fs::read_to_string(data_dir?.join("var").join("version"))
             .ok()
             .and_then(|s| version_token(&s).or_else(|| Some(s.trim().to_string())))
@@ -289,6 +299,14 @@ fn runtime_subdirs(manager: &str) -> &'static [(&'static str, usize)] {
         "sdkman" => &[("candidates", 2)],
         "asdf" | "mise" => &[("installs", 2)],
         "fnm" => &[("node-versions", 1), ("aliases", 0)],
+        "rustup" => &[("toolchains", 1)],
+        "rbenv" => &[("versions", 1)],
+        "rvm" => &[
+            ("rubies", 1),
+            ("gems", 0),
+            ("wrappers", 0),
+            ("environments", 0),
+        ],
         _ => &[],
     }
 }
@@ -332,6 +350,36 @@ pub fn data_runtimes(manager: &str, data: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// `rustup` itself and the proxies next to it (hard links / copies of the rustup binary).
+fn rustup_proxies(entry: &Path) -> Vec<PathBuf> {
+    let Some(dir) = entry.parent() else {
+        return vec![];
+    };
+    let size = std::fs::metadata(entry).map(|m| m.len()).ok();
+    let mut v = vec![entry.to_path_buf()];
+    for n in [
+        "rustc",
+        "cargo",
+        "rustdoc",
+        "rustfmt",
+        "cargo-fmt",
+        "cargo-clippy",
+        "clippy-driver",
+        "rust-gdb",
+        "rust-gdbgui",
+        "rust-lldb",
+        "rust-analyzer",
+        "rls",
+        "cargo-miri",
+    ] {
+        let f = dir.join(format!("{n}{}", std::env::consts::EXE_SUFFIX));
+        if f.is_file() && std::fs::metadata(&f).map(|m| m.len()).ok() == size {
+            v.push(f);
+        }
+    }
+    v
+}
+
 /// Shell startup files installers write to.
 pub fn rc_files(home: &Path) -> Vec<PathBuf> {
     [
@@ -367,6 +415,10 @@ pub fn rc_line_matches(manager: &str, line: &str) -> bool {
         "fnm" => any(&["fnm env", "/fnm\"", "/fnm:", "FNM_PATH", "fnm completions"]),
         "mise" => any(&["mise activate", "mise.run"]),
         "asdf" => any(&["asdf.sh", "asdf.fish", "ASDF_DATA_DIR", "asdf/completions"]),
+        "rbenv" => any(&["rbenv init", ".rbenv/bin", "RBENV_ROOT"]),
+        "rvm" => any(&[".rvm/scripts/rvm", ".rvm/bin", "rvm_path"]),
+        // rustup-init writes `. "$HOME/.cargo/env"` (only without --no-modify-path)
+        "rustup" => any(&[".cargo/env"]),
         _ => false,
     }
 }
@@ -568,7 +620,15 @@ pub fn plan_with(
                     "curl -fsSL https://fnm.vercel.app/install | bash -s -- --skip-shell --install-dir \"$1\"",
                     &[d],
                 ),
-                "pyenv" | "asdf" | "pyenv-win" => (
+                "rustup" => (
+                    vec![entry.display().to_string(), s("self"), s("update")],
+                    s("rustup self update"),
+                ),
+                "rvm" => sh_cmd(
+                    r#"export rvm_path="$1"; . "$rvm_path/scripts/rvm" && rvm get stable"#,
+                    &[d],
+                ),
+                "pyenv" | "asdf" | "pyenv-win" | "rbenv" => (
                     vec![tool("git").unwrap_or(s("git")), s("-C"), d.clone(), s("pull"), s("--ff-only")],
                     format!("git -C {d} pull --ff-only"),
                 ),
@@ -576,6 +636,20 @@ pub fn plan_with(
             };
             p.command = Some(cmd);
             p.command_line = Some(line);
+        }
+        ("uninstall", "script") if name == "rustup" && !p.keep_data => {
+            // rustup removes ~/.rustup and ~/.cargo (including `cargo install` tools)
+            if let Some(d) = data.clone() {
+                p.env.push(("RUSTUP_HOME".into(), d.display().to_string()));
+            }
+            p.command = Some(vec![
+                entry.display().to_string(),
+                s("self"),
+                s("uninstall"),
+                s("-y"),
+            ]);
+            p.command_line = Some(s("rustup self uninstall -y"));
+            p.remove_dirs.push(probe.env.cargo_home());
         }
         ("uninstall", _) => {
             // script / git installs live in their own directory
@@ -606,7 +680,14 @@ pub fn plan_with(
             if name == "mise" {
                 p.remove_dirs.push(entry.clone());
             }
-            p.rc_edits = rc_edits_for(name, &probe.env.home);
+            if name == "rustup" {
+                // keep the toolchains: remove rustup and its proxies from ~/.cargo/bin
+                p.remove_dirs.extend(rustup_proxies(&entry));
+            }
+            // ~/.cargo/env also puts `cargo install` tools on PATH: keep it with the data
+            if !(name == "rustup" && p.keep_data) {
+                p.rc_edits = rc_edits_for(name, &probe.env.home);
+            }
         }
         _ => unreachable!(),
     }

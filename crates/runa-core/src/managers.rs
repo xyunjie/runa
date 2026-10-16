@@ -28,6 +28,9 @@ pub const VIAS: &[&str] = &[
     "sdkman",
     "asdf",
     "mise",
+    "rustup",
+    "rbenv",
+    "rvm",
 ];
 
 /// Managers able to install `tool`, in order of preference, on this platform.
@@ -45,6 +48,12 @@ pub fn candidates_for(tool: &str, windows: bool) -> Vec<&'static str> {
         ("java", true) => vec!["mise"],
         ("go", false) => vec!["mise", "asdf"],
         ("go", true) => vec!["mise"],
+        ("rust", false) => vec!["rustup", "mise", "asdf"],
+        ("rust", true) => vec!["rustup", "mise"],
+        ("ruby", false) => vec!["rbenv", "rvm", "mise", "asdf"],
+        ("ruby", true) => vec!["mise"],
+        ("bun" | "deno", false) => vec!["mise", "asdf"],
+        ("bun" | "deno", true) => vec!["mise"],
         _ => vec![],
     }
 }
@@ -163,6 +172,24 @@ impl Probe {
                 let entry = self.find("pyenv", &[store.join("bin")])?;
                 Some(Located { entry, store })
             }
+            "rustup" => {
+                let store = self.first_existing("rustup")?;
+                let entry = self.find("rustup", &[self.env.cargo_home().join("bin")])?;
+                Some(Located { entry, store })
+            }
+            "rbenv" => {
+                let store = self.first_existing("rbenv")?;
+                let entry = self.find("rbenv", &[store.join("bin")])?;
+                Some(Located { entry, store })
+            }
+            // rvm is a shell function defined by scripts/rvm
+            "rvm" => self
+                .env
+                .manager_dir("rvm")
+                .into_iter()
+                .map(|d| (d.join("scripts").join("rvm"), d))
+                .find(|(s, _)| s.is_file())
+                .map(|(entry, store)| Located { entry, store }),
             "asdf" => {
                 let store = self.first_existing("asdf")?;
                 // only when the plugin is installed: asdf cannot install without it
@@ -210,18 +237,30 @@ pub fn choose(probe: &Probe, tool: &str, pref: &str) -> Result<(String, Option<L
     choose_for(probe, tool, pref, cfg!(windows))
 }
 
-fn choose_for(
+pub(crate) fn choose_for(
     probe: &Probe,
     tool: &str,
     pref: &str,
     windows: bool,
 ) -> Result<(String, Option<Located>)> {
     let cands = candidates_for(tool, windows);
+    let download = runa_downloads(tool, windows);
+    let no_download = || {
+        anyhow!(
+            "runa 不能直接下载 {tool}（没有可移植的官方预编译包），请先安装 {}",
+            cands.join(" / ")
+        )
+    };
     match pref {
-        "" | "auto" => Ok(cands
+        "" | "auto" => match cands
             .iter()
             .find_map(|v| probe.locate(v, tool).map(|l| (v.to_string(), Some(l))))
-            .unwrap_or_else(|| ("runa".into(), None))),
+        {
+            Some(c) => Ok(c),
+            None if download => Ok(("runa".into(), None)),
+            None => Err(no_download()),
+        },
+        "runa" if !download => Err(no_download()),
         "runa" => Ok(("runa".into(), None)),
         v if !VIAS.contains(&v) => bail!("未知安装方式: {v}（可选: {}）", VIAS.join(" / ")),
         v if !cands.contains(&v) => bail!("{v} 不能在此平台上安装 {tool}"),
@@ -232,11 +271,22 @@ fn choose_for(
     }
 }
 
+/// Whether runa's own download works for `tool` (no plugin registry needed: the
+/// built-in exceptions are fixed).
+pub fn runa_downloads(tool: &str, windows: bool) -> bool {
+    !(tool == "ruby" || (tool == "rust" && windows))
+}
+
 pub fn installer_choice(probe: &Probe, tool: &str, pref: &str) -> InstallerChoice {
+    let download = runa_downloads(tool, cfg!(windows));
     let mut options = vec![InstallerOption {
         via: "runa".into(),
-        available: true,
-        detail: "runa 直接下载".into(),
+        available: download,
+        detail: if download {
+            "runa 直接下载".into()
+        } else {
+            "没有可移植的官方预编译包".into()
+        },
     }];
     for v in candidates(tool) {
         let l = probe.locate(v, tool);
@@ -250,7 +300,13 @@ pub fn installer_choice(probe: &Probe, tool: &str, pref: &str) -> InstallerChoic
     }
     let chosen = choose(probe, tool, pref)
         .map(|(v, _)| v)
-        .unwrap_or_else(|_| format!("{pref}（不可用）"));
+        .unwrap_or_else(|_| {
+            if pref.is_empty() {
+                "auto（不可用）".into()
+            } else {
+                format!("{pref}（不可用）")
+            }
+        });
     InstallerChoice {
         tool: tool.into(),
         chosen,
@@ -369,6 +425,34 @@ pub fn install_command(via: &str, tool: &str, version: &str, loc: &Located) -> R
             vec![("MISE_DATA_DIR", store)],
             "mise",
         ),
+        "rustup" => exe(
+            vec![
+                s("toolchain"),
+                s("install"),
+                s(version),
+                s("--profile"),
+                s("default"),
+            ],
+            vec![("RUSTUP_HOME", store)],
+            "rustup",
+        ),
+        "rbenv" => exe(
+            vec![s("install"), s("-s"), s(version)],
+            vec![("RBENV_ROOT", store)],
+            "rbenv",
+        ),
+        "rvm" => ManagerCmd {
+            program: "bash".into(),
+            args: vec![
+                s("-lc"),
+                s(r#"export rvm_path="$1"; . "$rvm_path/scripts/rvm" && rvm install "$2""#),
+                s("runa-rvm"),
+                store,
+                s(version),
+            ],
+            env: vec![],
+            display: format!("rvm install {version}"),
+        },
         v => bail!("{v} 不是版本管理器"),
     })
 }
@@ -391,6 +475,25 @@ pub fn expected_homes(via: &str, tool: &str, version: &str, store: &Path) -> Vec
             }
         }
         "mise" => vec![store.join("installs").join(tool).join(version)],
+        // <version>-<host triple>
+        "rustup" => {
+            let pre = format!("{version}-");
+            let mut v: Vec<PathBuf> = std::fs::read_dir(store.join("toolchains"))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with(&pre))
+                })
+                .collect();
+            v.sort();
+            v
+        }
+        "rbenv" => vec![store.join("versions").join(version)],
+        "rvm" => vec![store.join("rubies").join(format!("ruby-{version}"))],
         _ => vec![],
     }
 }
@@ -595,7 +698,7 @@ mod tests {
         assert_eq!(candidates_for("node", true)[0], "nvm-windows");
         assert_eq!(candidates_for("python", true)[0], "pyenv-win");
         assert_eq!(candidates_for("java", false)[0], "sdkman");
-        assert!(candidates_for("deno", false).is_empty());
+        assert_eq!(candidates_for("deno", false), ["mise", "asdf"]);
     }
 
     #[test]

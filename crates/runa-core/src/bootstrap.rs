@@ -23,6 +23,9 @@ pub const MANAGERS: &[&str] = &[
     "sdkman",
     "asdf",
     "mise",
+    "rustup",
+    "rbenv",
+    "rvm",
 ];
 
 /// Pinned versions of install scripts / sources.
@@ -32,7 +35,8 @@ pub const ASDF_VERSION: &str = "v0.14.1";
 /// Whether `manager` exists for the platform.
 pub fn supported_on(manager: &str, windows: bool) -> bool {
     match manager {
-        "nvm" | "sdkman" | "pyenv" | "asdf" => !windows,
+        "nvm" | "sdkman" | "pyenv" | "asdf" | "rbenv" | "rvm" => !windows,
+        "rustup" => true,
         "nvm-windows" | "pyenv-win" => windows,
         "fnm" | "mise" => true,
         _ => false,
@@ -45,7 +49,11 @@ pub fn tools_of(manager: &str) -> &'static [&'static str] {
         "nvm" | "nvm-windows" | "fnm" => &["node"],
         "pyenv" | "pyenv-win" => &["python"],
         "sdkman" => &["java"],
-        "asdf" | "mise" => &["node", "python", "java", "go"],
+        "rustup" => &["rust"],
+        "rbenv" | "rvm" => &["ruby"],
+        "asdf" | "mise" => &[
+            "node", "python", "java", "go", "rust", "ruby", "bun", "deno",
+        ],
         _ => &[],
     }
 }
@@ -218,6 +226,53 @@ pub fn methods_for(probe: &Probe, manager: &str, windows: bool) -> Vec<Method> {
                 });
             }
         }
+        "rustup" => {
+            if windows {
+                let a = winget("Rustlang.Rustup");
+                let a: Vec<&str> = a.iter().map(String::as_str).collect();
+                pkg(
+                    &mut v,
+                    "winget",
+                    &a,
+                    "rustup-init 会把 %USERPROFILE%\\.cargo\\bin 加入用户 PATH",
+                    "需要 Visual Studio C++ 生成工具才能链接；安装到 %USERPROFILE%\\.rustup",
+                );
+                pkg(&mut v, "scoop", &["install", "rustup"], "", "");
+            } else {
+                script(
+                    &mut v,
+                    "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path",
+                    "",
+                    "官方 rustup-init；--no-modify-path：不修改 shell 配置文件。安装到 ~/.rustup 和 ~/.cargo，并装好 stable 工具链",
+                );
+            }
+        }
+        "rbenv" => {
+            pkg(&mut v, "brew", &["install", "rbenv", "ruby-build"], "", "");
+            if let (Some(bash), Some(_)) = (helper(probe, "bash"), helper(probe, "git")) {
+                let dest = probe
+                    .env
+                    .manager_dir("rbenv")
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| probe.env.home.join(".rbenv"));
+                let d = dest.display().to_string();
+                let cmd = format!(
+                    "git clone https://github.com/rbenv/rbenv.git {d} && git clone https://github.com/rbenv/ruby-build.git {d}/plugins/ruby-build"
+                );
+                v.push(Method {
+                    manager: s(manager),
+                    method: s("git"),
+                    program: bash,
+                    args: vec![s("-c"), cmd.clone()],
+                    display: cmd,
+                    rc_note: String::new(),
+                    note: format!("安装 rbenv 和 ruby-build 到 {d}，不修改 shell 配置文件；编译 Ruby 需要系统构建依赖"),
+                });
+            }
+        }
+        // rvm's installer needs GPG key import and edits several rc files: not offered
+        "rvm" => {}
         "mise" => {
             pkg(&mut v, "brew", &["install", "mise"], "", "");
             let a = winget("jdx.mise");
@@ -249,6 +304,15 @@ pub fn is_installed(probe: &Probe, manager: &str) -> bool {
                 .map(|d| d.join("bin"))
                 .collect();
             probe.find("asdf", &bins).is_some()
+        }
+        "rbenv" => {
+            let bins: Vec<PathBuf> = probe
+                .env
+                .manager_dir("rbenv")
+                .iter()
+                .map(|d| d.join("bin"))
+                .collect();
+            probe.find("rbenv", &bins).is_some()
         }
         m => tools_of(m)
             .first()
@@ -293,6 +357,9 @@ pub fn plan(probe: &Probe, manager: &str) -> Result<Method> {
     }
     if !supported_on(manager, cfg!(windows)) {
         bail!("{manager} 不支持当前平台");
+    }
+    if manager == "rvm" {
+        bail!("runa 不安装 rvm（官方安装需要导入 GPG 密钥并修改多个 shell 配置文件）；推荐改用 rbenv，已安装的 rvm 会被自动识别");
     }
     methods(probe, manager).into_iter().next().ok_or_else(|| {
         anyhow::anyhow!(

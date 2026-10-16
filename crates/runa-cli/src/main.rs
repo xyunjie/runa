@@ -20,7 +20,7 @@ mod mcp;
 #[command(
     name = "runa",
     version,
-    about = "runa —— 多语言运行时版本管理器（Node / Java / Python / Go …）"
+    about = "runa —— 多语言运行时版本管理器（Node / Java / Python / Go / Rust / Ruby / Bun / Deno …）"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -36,7 +36,7 @@ enum Cmd {
         /// 上游没有提供 SHA256 时拒绝安装（也可设置 RUNA_REQUIRE_CHECKSUM=1）
         #[arg(long)]
         require_checksum: bool,
-        /// 安装方式：auto（默认，优先用已检测到的 nvm / fnm / pyenv / sdkman / asdf / mise）、
+        /// 安装方式：auto（默认，优先用已检测到的 nvm / fnm / pyenv / sdkman / rustup / rbenv / rvm / asdf / mise）、
         /// runa（直接下载）或指定管理器名
         #[arg(long)]
         via: Option<String>,
@@ -49,7 +49,7 @@ enum Cmd {
     Uninstall {
         tool: String,
         version: String,
-        /// 接管的版本：通过其所属工具彻底卸载（brew / nvm / pyenv / sdk / asdf / fnm，或删除目录）
+        /// 接管的版本：通过其所属工具彻底卸载（brew / nvm / pyenv / sdk / rustup / rbenv / rvm / asdf / mise / fnm / scoop / winget，或删除目录）
         #[arg(long, conflicts_with = "forget")]
         purge: bool,
         /// 接管的版本：只移除 runa 的管理记录，保留原有文件
@@ -184,7 +184,7 @@ enum Cmd {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
-    /// 版本管理器：查看状态或安装 nvm / fnm / pyenv / sdkman / asdf / mise（及 Windows 版本）
+    /// 版本管理器：查看状态或安装 nvm / fnm / pyenv / sdkman / rustup / rbenv / asdf / mise（及 Windows 版本）
     #[command(
         after_help = "示例:\n  runa manager list\n  runa manager install fnm\n  runa manager install asdf --tool go --yes"
     )]
