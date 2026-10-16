@@ -90,8 +90,56 @@ pub enum VersionReq {
     Prefix(Vec<u64>),
     /// At least this version.
     AtLeast(Vec<u64>),
+    /// `>=min` and below `max` (`<max`, or `<=max` when the flag is set):
+    /// `>=18 <21`, `>=3.10,<3.13`, `~=3.10`.
+    Range(Vec<u64>, Vec<u64>, bool),
     /// Exact string match (used for versions with build metadata).
     Exact(String),
+}
+
+fn cmp_comps(c: &[u64], other: &[u64]) -> std::cmp::Ordering {
+    let n = c.len().max(other.len());
+    for i in 0..n {
+        let x = c.get(i).copied().unwrap_or(0);
+        let y = other.get(i).copied().unwrap_or(0);
+        if x != y {
+            return x.cmp(&y);
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+/// `>=a <b` / `>=a,<b` / `~=a.b` -> Range.
+fn parse_range(s: &str) -> Option<VersionReq> {
+    if let Some(rest) = s.strip_prefix("~=") {
+        let c = components(rest);
+        if c.len() < 2 {
+            return None;
+        }
+        let mut max = c[..c.len() - 1].to_vec();
+        *max.last_mut()? += 1;
+        return Some(VersionReq::Range(c, max, false));
+    }
+    let toks: Vec<&str> = s
+        .split([' ', ','])
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .collect();
+    let mut min = None;
+    let mut max = None;
+    for t in toks {
+        if let Some(r) = t.strip_prefix(">=").or_else(|| t.strip_prefix('>')) {
+            min = Some(components(r));
+        } else if let Some(r) = t.strip_prefix("<=") {
+            max = Some((components(r), true));
+        } else if let Some(r) = t.strip_prefix('<') {
+            max = Some((components(r), false));
+        } else {
+            return None;
+        }
+    }
+    let (max, incl) = max?;
+    (!max.is_empty()).then(|| VersionReq::Range(min.unwrap_or_default(), max, incl))
 }
 
 impl VersionReq {
@@ -99,8 +147,11 @@ impl VersionReq {
         let s = spec.trim();
         // "^18 || ^20": prefer the newest alternative.
         let s = s.rsplit("||").next().unwrap_or(s).trim();
-        // ">=18 <21": keep the lower bound only.
-        let s = s.split_whitespace().next().unwrap_or("");
+        if let Some(r) = parse_range(s) {
+            return r;
+        }
+        // ">=18": keep the lower bound only.
+        let s = s.split([' ', ',']).next().unwrap_or("");
         let lower = s.to_ascii_lowercase();
         match lower.as_str() {
             "" | "latest" | "stable" | "*" | "current" | "node" => return Self::Latest,
@@ -164,6 +215,16 @@ impl VersionReq {
                     }
                 }
                 true
+            }
+            Self::Range(min, max, incl) => {
+                if is_prerelease(version) {
+                    return false;
+                }
+                let c = components(version);
+                let hi = cmp_comps(&c, max);
+                cmp_comps(&c, min) != std::cmp::Ordering::Less
+                    && (hi == std::cmp::Ordering::Less
+                        || (*incl && hi == std::cmp::Ordering::Equal))
             }
             Self::Exact(s) => strip_prefixes(version) == s || version == s,
         }
@@ -255,7 +316,7 @@ mod tests {
         );
         assert_eq!(
             VersionReq::parse(">=18 <21").best(&c).as_deref(),
-            Some("22.1.0")
+            Some("20.11.1")
         );
     }
 
@@ -282,5 +343,41 @@ mod tests {
             Some("21.0.12.1")
         );
         assert_eq!(VersionReq::parse("8").best(&c).as_deref(), Some("8.0.462"));
+    }
+}
+
+#[cfg(test)]
+mod range_tests {
+    use super::*;
+
+    #[test]
+    fn ranges() {
+        let r = VersionReq::parse(">=18 <21");
+        assert!(
+            r.matches("20.11.1")
+                && r.matches("18.0.0")
+                && !r.matches("21.0.0")
+                && !r.matches("17.9.0")
+        );
+        let vs: Vec<String> = ["24.13.0", "22.22.2", "20.1.0"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(r.best(vs.iter()).as_deref(), Some("20.1.0"));
+        let p = VersionReq::parse(">=3.10,<3.13");
+        assert!(p.matches("3.12.2") && !p.matches("3.13.0") && !p.matches("3.9.1"));
+        let c = VersionReq::parse("~=3.10");
+        assert!(c.matches("3.12.2") && !c.matches("4.0.0") && !c.matches("3.9.0"));
+        let le = VersionReq::parse(">=8, <=17");
+        assert!(le.matches("17") && le.matches("17.0.0") && !le.matches("17.0.1"));
+        assert_eq!(VersionReq::parse(">=18"), VersionReq::AtLeast(vec![18]));
+        assert_eq!(
+            VersionReq::parse(">=3.10,"),
+            VersionReq::AtLeast(vec![3, 10])
+        );
+        assert_eq!(
+            VersionReq::parse("^18 || ^20"),
+            VersionReq::Prefix(vec![20])
+        );
     }
 }

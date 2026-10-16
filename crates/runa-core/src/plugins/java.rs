@@ -169,8 +169,12 @@ impl Plugin for Java {
         let t = Target::current();
         let major = match req {
             VersionReq::Latest | VersionReq::Lts => self.available(net)?.most_recent_lts as u64,
-            VersionReq::Prefix(c) | VersionReq::AtLeast(c) if c.len() == 1 => c[0],
-            VersionReq::Prefix(c) | VersionReq::AtLeast(c) => {
+            VersionReq::Prefix(c) | VersionReq::AtLeast(c) | VersionReq::Range(c, _, _)
+                if c.len() == 1 =>
+            {
+                c[0]
+            }
+            VersionReq::Prefix(c) | VersionReq::AtLeast(c) | VersionReq::Range(c, _, _) => {
                 // 1.8 -> 8
                 if c[0] == 1 && c.len() > 1 {
                     c[1]

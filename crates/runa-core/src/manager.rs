@@ -406,7 +406,7 @@ impl Manager {
 
     /// `runa use` / the GUI project page: write `version` to the file that currently sets
     /// `tool` for `dir` (one-line version files are rewritten in place; `package.json`,
-    /// `go.mod`, `.sdkmanrc`, `rust-toolchain.toml` get a `.tool-versions` next to them,
+    /// `go.mod`, `.sdkmanrc`, `rust-toolchain.toml` and build files such as `pom.xml` get a `.tool-versions` next to them,
     /// which takes precedence in that directory), else `<dir>/.tool-versions`. Files in
     /// `stop` (usually the home directory) or above are never written.
     pub fn set_project_version(
