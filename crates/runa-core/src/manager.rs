@@ -388,6 +388,14 @@ impl Manager {
         Ok(file)
     }
 
+    /// Remove `tool` from the global `.tool-versions` and drop `current/<tool>`.
+    pub fn unset_global(&self, tool: &str) -> Result<()> {
+        let tool = self.plugin(tool)?.name().to_string();
+        toolversions::set_in_file(&self.paths.global_tool_versions(), &tool, None)?;
+        let _ = platform::remove_link(&self.paths.current().join(&tool));
+        Ok(())
+    }
+
     /// Write `tool version` to `<dir>/.tool-versions`.
     pub fn set_local(&self, dir: &Path, tool: &str, version: &str) -> Result<PathBuf> {
         let tool = self.plugin(tool)?.name().to_string();
