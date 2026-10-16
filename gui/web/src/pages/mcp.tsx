@@ -11,9 +11,9 @@ import { notify, useShortPath } from "@/lib/actions";
 
 function Group({ title, desc, children }: { title: string; desc: React.ReactNode; children: React.ReactNode }) {
   return (
-    <section className="grid grid-cols-1 gap-4 border-t border-border py-8 first-of-type:border-t-0 first-of-type:pt-0 lg:grid-cols-[240px_1fr] lg:gap-8">
+    <section className="grid grid-cols-1 gap-4 border-t border-border py-8 first-of-type:border-t-0 first-of-type:pt-0 xl:grid-cols-[220px_minmax(0,1fr)] xl:gap-8">
       <div><h3 className="m-0 mb-1.5 font-semibold">{title}</h3><div className="m-0 text-sm leading-relaxed text-fg-3">{desc}</div></div>
-      <div>{children}</div>
+      <div className="min-w-0">{children}</div>
     </section>
   );
 }
@@ -42,11 +42,11 @@ function ClientRow({ c, cliFound, busy, onAdd, onRemove }: { c: McpClient; cliFo
     <div className="[&+&]:border-t [&+&]:border-border">
       <Row className="border-0">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 font-medium">
+          <div className="flex flex-wrap items-center gap-2 font-medium">
             {c.name}
             {c.added && <Badge variant="ok"><Check size={12} />已添加</Badge>}
           </div>
-          <div className="truncate text-sm text-fg-3">{how}</div>
+          <div className="truncate text-sm text-fg-3" title={how}>{how}</div>
           {c.config_path && <div className="selectable truncate font-mono text-xs text-fg-3" title={c.config_path}>{sp(c.config_path)}</div>}
         </div>
         <div data-actions="" data-show="">
@@ -104,7 +104,7 @@ export function McpPage() {
       {!st.cli_found && <Callout kind="warn" title="未找到 runa 命令行程序">AI 客户端需要通过 runa 命令启动 MCP 服务。请把 runa 放到 PATH 中或与 Runa 同目录。</Callout>}
       {st.bridge_error && <Callout kind="danger" icon={AlertTriangle} title="确认服务未启动">{st.bridge_error}；需要确认的操作会被拒绝。</Callout>}
       <Group title="状态" desc="AI 客户端以 stdio 方式启动下面这个命令。">
-        <div className="grid grid-cols-[96px_1fr] gap-x-4 gap-y-2.5 text-sm">
+        <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
           <span className="text-fg-3">命令</span><span className="selectable break-all font-mono text-fg-2">{sp(st.cli_path)} mcp</span>
           <span className="text-fg-3">确认服务</span><span className="text-fg-2">{st.bridge_running ? "运行中（仅本机 127.0.0.1）" : "未运行"}</span>
           <span className="text-fg-3">工具</span><span className="text-fg-2">list_runtimes、list_available、detect_project、list_managers（只读）；install、set_global、uninstall（写入）</span>

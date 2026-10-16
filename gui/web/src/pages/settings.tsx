@@ -15,9 +15,9 @@ import { addUserPath, removeShell, reshim, saveProxy, setMirror, setupShell, use
 
 function Group({ title, desc, children }: { title: string; desc: React.ReactNode; children: React.ReactNode }) {
   return (
-    <section className="grid grid-cols-1 gap-4 border-t border-border py-8 first-of-type:border-t-0 first-of-type:pt-0 lg:grid-cols-[240px_1fr] lg:gap-8">
+    <section className="grid grid-cols-1 gap-4 border-t border-border py-8 first-of-type:border-t-0 first-of-type:pt-0 xl:grid-cols-[220px_minmax(0,1fr)] xl:gap-8">
       <div><h3 className="m-0 mb-1.5 font-semibold">{title}</h3><p className="m-0 text-sm leading-relaxed text-fg-3">{desc}</p></div>
-      <div>{children}</div>
+      <div className="min-w-0">{children}</div>
     </section>
   );
 }
@@ -72,7 +72,7 @@ export function SettingsPage() {
               <Terminal size={16} strokeWidth={1.75} className="text-fg-3" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 font-medium">{sh.shell}{sh.shell === ov.default_shell && <Badge>默认</Badge>}</div>
-                <div className="selectable truncate font-mono text-sm text-fg-3">{sp(sh.profile)}</div>
+                <div className="selectable truncate font-mono text-sm text-fg-3" title={sh.profile}>{sp(sh.profile)}</div>
               </div>
               {sh.configured && <Badge variant="ok"><Check size={12} />已启用</Badge>}
               <div data-actions="" data-show="">
@@ -96,7 +96,7 @@ export function SettingsPage() {
           items={THEMES.map((t) => ({ value: t.value, label: <><t.icon size={14} strokeWidth={1.75} />{t.label}</> }))} />
       </Group>
       <Group title="关于" desc={`Runa ${ov.app_version}`}>
-        <div className="grid grid-cols-[96px_1fr] gap-x-4 gap-y-2.5 text-sm">
+        <div className="grid grid-cols-[88px_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
           <span className="text-fg-3">数据目录</span><span className="selectable break-all font-mono text-fg-2">{ov.home}</span>
           <span className="text-fg-3">命令行</span><span className="selectable break-all font-mono text-fg-2">{ov.cli_path}{ov.cli_found ? "" : "（未找到）"}</span>
           <span className="text-fg-3">平台</span><span className="selectable break-all font-mono text-fg-2">{ov.platform}</span>

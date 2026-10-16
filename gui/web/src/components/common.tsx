@@ -64,7 +64,7 @@ export function Callout({ kind = "info", title, children, action, className, ico
 
 export function PageHead({ title, sub, children }: { title: React.ReactNode; sub?: React.ReactNode; children?: React.ReactNode }) {
   return (
-    <div className="mb-8 flex items-start justify-between gap-6">
+    <div className="mb-8 flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
       <div>
         <h1 className="m-0 text-xl font-semibold leading-tight tracking-[-0.02em]">{title}</h1>
         {sub && <div className="mt-1.5 text-fg-3">{sub}</div>}
