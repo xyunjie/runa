@@ -381,7 +381,11 @@ fn run(cli: Cli) -> Result<i32> {
             reshim_quiet(&m);
             if m.global_version(&tool).is_none() {
                 m.set_global(&tool, &v)?;
-                eprintln!("已将 {tool} {v} 设为全局默认版本（首次安装）");
+                if m.paths.is_isolated() {
+                    eprintln!("已将 {tool} {v} 设为项目环境的默认版本（首次安装）");
+                } else {
+                    eprintln!("已将 {tool} {v} 设为全局默认版本（首次安装）");
+                }
             }
             println!("{v}");
         }

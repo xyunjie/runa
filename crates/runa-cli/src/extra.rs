@@ -335,7 +335,22 @@ pub fn clean(m: &Manager, json: bool) -> Result<()> {
 pub fn update(m: &Manager, check: bool, version: Option<&str>, json: bool) -> Result<i32> {
     let net = m.net()?;
     let current = env!("CARGO_PKG_VERSION");
-    let info = updater::check(&net, current, version)?;
+    let info = match updater::check(&net, current, version) {
+        Ok(i) => i,
+        // `--check` is informational: "no release yet" is not a failure
+        Err(e) if check && format!("{e:#}").contains("还没有") => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "current": current, "available": false, "message": format!("{e:#}") })
+                );
+            } else {
+                println!("{e:#}；当前 v{current}");
+            }
+            return Ok(0);
+        }
+        Err(e) => return Err(e),
+    };
     if check || (!info.available && version.is_none()) {
         if json {
             println!("{}", serde_json::to_string_pretty(&info)?);
