@@ -10,6 +10,7 @@ use crate::net::Net;
 use crate::paths::Paths;
 use crate::platform;
 use crate::plugins::{PluginRef, Registry};
+use crate::project::{self, Project};
 use crate::resolver::{self, Spec};
 use crate::settings::Settings;
 use crate::toolversions;
@@ -21,6 +22,10 @@ pub struct Manager {
     pub registry: Registry,
     /// Non fatal problems (e.g. broken manifest plugins).
     pub warnings: Vec<String>,
+    /// The project environment this manager is bound to (see [`Manager::load_for`]).
+    pub project: Option<Project>,
+    /// Refuse installs whose publisher does not provide a SHA-256.
+    pub require_checksum: bool,
 }
 
 /// The version that applies to a tool in a directory.
@@ -72,6 +77,21 @@ impl Manager {
         Self::with_paths(Paths::detect()?)
     }
 
+    /// Load for a working directory: inside an isolated project (`runa project init`),
+    /// installs, shims and versions come from `<project>/.runa/env`.
+    pub fn load_for(cwd: &Path) -> Result<Self> {
+        let global = Paths::detect()?;
+        match project::find(cwd)? {
+            Some(p) => {
+                p.validate_state_root()?;
+                let mut m = Self::with_paths(p.paths(&global))?;
+                m.project = Some(p);
+                Ok(m)
+            }
+            None => Self::with_paths(global),
+        }
+    }
+
     pub fn with_paths(paths: Paths) -> Result<Self> {
         let settings = Settings::load(&paths.settings_file())?;
         let (registry, warnings) = Registry::load(&paths.plugins());
@@ -80,6 +100,8 @@ impl Manager {
             settings,
             registry,
             warnings,
+            project: None,
+            require_checksum: false,
         })
     }
 
@@ -225,7 +247,14 @@ impl Manager {
         let version = plugin
             .resolve_remote(&net, &req)
             .with_context(|| format!("解析 {tool} {spec} 失败"))?;
-        installer::install(&self.paths, &net, plugin.as_ref(), &version, progress)?;
+        installer::install(
+            &self.paths,
+            &net,
+            plugin.as_ref(),
+            &version,
+            self.require_checksum,
+            progress,
+        )?;
         Ok(version)
     }
 
@@ -324,6 +353,24 @@ impl Manager {
                     }
                 }
                 plan.vars.extend(self.env_vars(&r.tool, v));
+            }
+        }
+        if let Some(p) = &self.project {
+            plan.vars.extend(p.variables());
+            for k in p.cleared_variables() {
+                plan.vars.push((k.to_string(), String::new()));
+            }
+            if p.mode == "local" {
+                let bin = p
+                    .env_root()
+                    .join("node")
+                    .join(if cfg!(windows) { "" } else { "bin" });
+                let gobin = p.env_root().join("go").join("bin");
+                for d in [bin, gobin] {
+                    if !plan.paths.contains(&d) {
+                        plan.paths.push(d);
+                    }
+                }
             }
         }
         plan.tools = tools;

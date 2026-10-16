@@ -12,6 +12,10 @@ use runa_core::installer::Progress;
 use runa_core::manager::find_exe_in;
 use runa_core::Manager;
 
+mod context;
+mod extra;
+mod mcp;
+
 #[derive(Parser)]
 #[command(
     name = "runa",
@@ -29,6 +33,9 @@ enum Cmd {
     Install {
         tool: Option<String>,
         version: Option<String>,
+        /// 上游没有提供 SHA256 时拒绝安装（也可设置 RUNA_REQUIRE_CHECKSUM=1）
+        #[arg(long)]
+        require_checksum: bool,
     },
     /// 卸载某个已安装版本
     #[command(alias = "rm")]
@@ -46,7 +53,12 @@ enum Cmd {
     },
     /// 列出已安装版本（* 表示当前目录生效的版本）
     #[command(alias = "ls")]
-    List { tool: Option<String> },
+    List {
+        tool: Option<String>,
+        /// 以 JSON 输出
+        #[arg(long)]
+        json: bool,
+    },
     /// 列出可安装的远程版本
     ListAll {
         tool: String,
@@ -99,6 +111,94 @@ enum Cmd {
         #[arg(long)]
         remove: bool,
     },
+    /// 给 Agent / AI 的只读版本上下文：项目要求、解析与已激活版本、冲突与建议命令
+    #[command(
+        after_help = "示例:\n  runa context\n  runa context --json --check   # 未就绪时退出码为 1"
+    )]
+    Context {
+        /// 以 JSON 输出
+        #[arg(long)]
+        json: bool,
+        /// 环境不满足项目要求时返回非零退出码
+        #[arg(long)]
+        check: bool,
+    },
+    /// 按项目声明的版本执行命令（docker 模式下在容器中执行）
+    #[command(
+        after_help = "示例:\n  runa run -- node -v\n  runa run --install-missing -- npm test"
+    )]
+    Run {
+        /// 先安装缺失的版本（强制要求上游 SHA256）
+        #[arg(long)]
+        install_missing: bool,
+        /// 兼容参数：run 补装时总是要求 SHA256
+        #[arg(long, hide = true)]
+        require_checksum: bool,
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
+    /// 项目环境：一个项目一个环境（local 隔离 / versions 共享 / docker 容器）
+    Project {
+        #[command(subcommand)]
+        cmd: ProjectCmd,
+    },
+    /// MCP 服务（stdio）或生成 AI 客户端配置，固定绑定一个项目目录
+    #[command(
+        after_help = "示例:\n  runa mcp serve --project .\n  runa mcp config --project . --client cursor\n  runa mcp config --project . --client codex --read-only\n\n客户端: cursor / claude-desktop / claude-code / codex / vscode / windsurf / generic"
+    )]
+    Mcp {
+        /// serve（默认）或 config
+        #[arg(value_parser = ["serve", "config"])]
+        op: Option<String>,
+        /// 绑定的项目目录（必填）
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// 只暴露只读工具
+        #[arg(long)]
+        read_only: bool,
+        /// config 的目标客户端
+        #[arg(long)]
+        client: Option<String>,
+    },
+    /// 打开临时子 shell 使用某版本（不写任何配置，exit 即恢复）
+    Shell {
+        tool: String,
+        version: String,
+        /// bash / zsh / fish / powershell，默认当前 shell
+        shell: Option<String>,
+    },
+    /// 输出 shell 补全脚本：eval "$(runa completion bash)"
+    Completion { shell: clap_complete::Shell },
+    /// 统计各版本占用的磁盘空间
+    Size {
+        tool: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 清理下载缓存
+    Clean {
+        #[arg(long)]
+        json: bool,
+    },
+    /// 把 shims / 激活脚本写入 PATH（Windows 用户 PATH；macOS / Linux 写 shell 配置），同 setup
+    PathInit { shell: Option<String> },
+    /// 从 GitHub Releases 检查并更新 runa（SHA256 校验）
+    #[command(
+        after_help = "示例:\n  runa update --check\n  runa update\n  runa update --version v0.2.0"
+    )]
+    Update {
+        /// 只检查，不更新
+        #[arg(long)]
+        check: bool,
+        /// 更新到指定的稳定版本
+        #[arg(long)]
+        version: Option<String>,
+        /// 同时更新桌面端（不支持：桌面端以安装包发布）
+        #[arg(long, hide = true)]
+        gui: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// 列出所有可管理的工具（含 JSON 插件）
     Plugins,
     /// 诊断信息
@@ -109,6 +209,23 @@ enum Cmd {
         name: String,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectCmd {
+    /// 初始化项目环境（默认 local：版本与缓存都放在 <项目>/.runa/env）
+    Init {
+        #[arg(long, default_value = "local", value_parser = ["local", "versions", "docker"])]
+        mode: String,
+        /// docker 模式使用的镜像，如 node:22-bookworm
+        #[arg(long)]
+        image: Option<String>,
+    },
+    /// 查看项目环境与隔离模式
+    Status {
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -135,15 +252,15 @@ fn split_tool(tool: &str, version: Option<String>) -> (String, Option<String>) {
     }
 }
 
-struct Bar {
+pub(crate) struct Bar {
     pb: Option<ProgressBar>,
 }
 
 impl Bar {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { pb: None }
     }
-    fn handle(&mut self, p: Progress) {
+    pub(crate) fn handle(&mut self, p: Progress) {
         match p {
             Progress::Resolving { tool, spec } => eprintln!("→ 解析 {tool} {spec} …"),
             Progress::Downloading {
@@ -186,7 +303,35 @@ impl Bar {
 
 fn run(cli: Cli) -> Result<i32> {
     // `env` / `activate` / `shim` run on every prompt or command: keep them quiet.
-    let mut m = Manager::load()?;
+    let here = cwd();
+    // Commands that do not need (or must not fail on) a project manager.
+    match &cli.cmd {
+        Cmd::Completion { shell } => {
+            extra::completion(*shell);
+            return Ok(0);
+        }
+        Cmd::Mcp {
+            op,
+            project,
+            read_only,
+            client,
+        } => {
+            return mcp::command(
+                op.as_deref().unwrap_or("serve"),
+                project.as_deref(),
+                *read_only,
+                client.as_deref(),
+            );
+        }
+        _ => {}
+    }
+    let mut m = Manager::load_for(&here)?;
+    if let Ok(expect) = std::env::var("RUNA_MCP_EXPECT_MODE") {
+        let got = m.project.as_ref().map(|p| p.mode.as_str()).unwrap_or("");
+        if !expect.is_empty() && expect != got {
+            bail!("项目环境模式已变化（期望 {expect}），拒绝执行");
+        }
+    }
     let quiet = matches!(
         cli.cmd,
         Cmd::Env { .. } | Cmd::Activate { .. } | Cmd::Shim { .. }
@@ -196,9 +341,13 @@ fn run(cli: Cli) -> Result<i32> {
             eprintln!("警告: {w}");
         }
     }
-    let here = cwd();
     match cli.cmd {
-        Cmd::Install { tool: None, .. } => {
+        Cmd::Install {
+            tool: None,
+            require_checksum,
+            ..
+        } => {
+            m.require_checksum = require_checksum;
             let mut any = false;
             for r in m.resolve_all(&here) {
                 if r.version.is_none() && !r.system {
@@ -216,7 +365,9 @@ fn run(cli: Cli) -> Result<i32> {
         Cmd::Install {
             tool: Some(tool),
             version,
+            require_checksum,
         } => {
+            m.require_checksum = require_checksum;
             let (tool, version) = split_tool(&tool, version);
             let spec = match version {
                 Some(v) => v,
@@ -274,11 +425,18 @@ fn run(cli: Cli) -> Result<i32> {
                 );
             }
         }
-        Cmd::List { tool } => {
+        Cmd::List { tool, json } => {
             let tools = match tool {
                 Some(t) => vec![m.plugin(&t)?.name().to_string()],
                 None => m.registry.names(),
             };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&extra::list_json(&m, &tools, &here))?
+                );
+                return Ok(0);
+            }
             for t in tools {
                 let installed = m.installed(&t);
                 if installed.is_empty() {
@@ -465,14 +623,75 @@ fn run(cli: Cli) -> Result<i32> {
                 }
                 return Ok(0);
             }
-            let cli = activate::cli_path();
-            let p = activate::setup_profile(&m, &shell, &cli)?;
-            activate::reshim(&m, &cli)?;
-            if activate::add_shims_to_user_path(&m)? {
-                eprintln!("✓ 已把 {} 加入用户 PATH", m.paths.shims().display());
-            }
-            eprintln!("✓ 已写入 {}，重新打开终端后生效", p.display());
+            setup(&m, Some(shell))?;
         }
+        Cmd::Context { json, check } => return context::command(&m, &here, json, check),
+        Cmd::Run {
+            install_missing,
+            require_checksum: _,
+            command,
+        } => return extra::run(&mut m, &here, install_missing, &command),
+        Cmd::Project { cmd } => match cmd {
+            ProjectCmd::Init { mode, image } => {
+                let p = runa_core::project::init(&here, &mode, image.as_deref())?;
+                println!("{}", serde_json::to_string_pretty(&p)?);
+                if p.mode == "local" {
+                    eprintln!(
+                        "✓ 项目环境已初始化：版本将安装到 {}",
+                        p.env_root().display()
+                    );
+                }
+            }
+            ProjectCmd::Status { json } => {
+                let p = m.project.clone();
+                if json {
+                    let v = serde_json::json!({
+                        "initialized": p.is_some(),
+                        "project": p,
+                        "installs": p.as_ref().map(|_| m.paths.installs()),
+                    });
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                } else {
+                    match p {
+                        None => {
+                            println!("项目环境尚未初始化；执行 runa project init（默认 local）")
+                        }
+                        Some(p) => {
+                            println!("项目: {}\n隔离模式: {}", p.root().display(), p.mode);
+                            match &p.image {
+                                Some(i) => println!("容器镜像: {i}"),
+                                None => println!("工具目录: {}", m.paths.installs().display()),
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        Cmd::Shell {
+            tool,
+            version,
+            shell,
+        } => return extra::shell(&m, &here, &tool, &version, shell.as_deref()),
+        Cmd::Size { tool, json } => extra::size(&m, tool.as_deref(), json)?,
+        Cmd::Clean { json } => extra::clean(&m, json)?,
+        Cmd::PathInit { shell } => {
+            if m.paths.is_isolated() {
+                bail!("隔离项目请使用 runa run 或 shell 钩子，不把项目目录持久写入 PATH");
+            }
+            setup(&m, shell)?;
+        }
+        Cmd::Update {
+            check,
+            version,
+            gui,
+            json,
+        } => {
+            if gui {
+                bail!("桌面端以安装包（.msi / .dmg / .deb / .AppImage）发布，请从 GitHub Releases 下载更新；runa update 只更新命令行");
+            }
+            return extra::update(&m, check, version.as_deref(), json);
+        }
+        Cmd::Completion { .. } | Cmd::Mcp { .. } => unreachable!(),
         Cmd::Plugins => {
             for p in m.registry.all() {
                 let kind = if p.builtin() { "内置" } else { "JSON 插件" };
@@ -533,14 +752,29 @@ fn run(cli: Cli) -> Result<i32> {
     Ok(0)
 }
 
-fn reshim_quiet(m: &Manager) {
+/// Shell profile + shims always use the global home, even inside an isolated project.
+fn setup(_m: &Manager, shell: Option<String>) -> Result<()> {
+    let global = Manager::load()?;
+    let m = &global;
+    let shell = activate::normalize_shell(&shell.unwrap_or_else(activate::default_shell))?;
+    let cli = activate::cli_path();
+    let p = activate::setup_profile(m, &shell, &cli)?;
+    activate::reshim(m, &cli)?;
+    if activate::add_shims_to_user_path(m)? {
+        eprintln!("✓ 已把 {} 加入用户 PATH", m.paths.shims().display());
+    }
+    eprintln!("✓ 已写入 {}，重新打开终端后生效", p.display());
+    Ok(())
+}
+
+pub(crate) fn reshim_quiet(m: &Manager) {
     if let Err(e) = activate::reshim(m, &activate::cli_path()) {
         eprintln!("警告: 生成 shim 失败: {e:#}");
     }
 }
 
 /// Run `cmd` with the plan's PATH prepended and variables set.
-fn run_with_plan(
+pub(crate) fn run_with_plan(
     m: &Manager,
     plan: &runa_core::EnvPlan,
     cmd: &str,
@@ -564,7 +798,7 @@ fn run_with_plan(
     spawn(&exe, args, &plan.vars, Some(path))
 }
 
-fn spawn(
+pub(crate) fn spawn(
     exe: &Path,
     args: &[String],
     vars: &[(String, String)],

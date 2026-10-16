@@ -15,14 +15,17 @@ pub mod net;
 pub mod paths;
 pub mod platform;
 pub mod plugins;
+pub mod project;
 pub mod resolver;
 pub mod settings;
 pub mod toolversions;
+pub mod updater;
 pub mod version;
 
 pub use manager::{EnvPlan, Manager, Resolved, ToolStatus};
 pub use paths::Paths;
 pub use platform::Target;
+pub use project::Project;
 pub use resolver::{Source, Spec};
 pub use settings::Settings;
 

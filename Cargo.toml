@@ -7,8 +7,8 @@ default-members = ["crates/runa-core", "crates/runa-cli"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/your-name/runa"
-rust-version = "1.80"
+repository = "https://github.com/xyunjie/runa"
+rust-version = "1.88"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -22,6 +22,7 @@ flate2 = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 dirs = "6"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 indicatif = "0.17"
 tempfile = "3"
 
