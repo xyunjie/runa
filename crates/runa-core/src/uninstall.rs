@@ -15,8 +15,9 @@ use std::process::{Command, Stdio};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::detect::{self, classify, segments_after};
+use crate::detect::{self, classify};
 use crate::installer;
+use crate::locations::{self, Env, Owner};
 use crate::manager::{find_exe_in, Manager};
 use crate::platform;
 
@@ -67,7 +68,26 @@ pub struct UninstallPlan {
     pub summary: String,
 }
 
+/// Quote for display in the platform's shell (POSIX sh, or PowerShell on Windows).
 fn q(s: &str) -> String {
+    if cfg!(windows) {
+        q_powershell(s)
+    } else {
+        q_sh(s)
+    }
+}
+
+fn q_powershell(s: &str) -> String {
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-+@/\\:,".contains(c))
+    {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+fn q_sh(s: &str) -> String {
     if !s.is_empty()
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || "._-+@/=:,".contains(c))
@@ -95,6 +115,10 @@ fn find_tool(m: &Manager, name: &str, extra: &[PathBuf]) -> String {
     dirs.extend(m.system_path());
     dirs.push("/opt/homebrew/bin".into());
     dirs.push("/usr/local/bin".into());
+    dirs.push("/home/linuxbrew/.linuxbrew/bin".into());
+    if let Some(h) = dirs::home_dir() {
+        dirs.push(h.join(".linuxbrew").join("bin"));
+    }
     find_exe_in(&dirs, name)
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| name.to_string())
@@ -138,13 +162,15 @@ fn writable(dir: &Path) -> bool {
     }
 }
 
+/// Never delete these: too shallow, a shared prefix, the user's home or one of its
+/// parents, an OS-owned path, or something a Windows installer owns.
 fn dangerous(p: &Path) -> bool {
     p.components().count() < 3
         || detect::is_system_prefix(p)
         || dirs::home_dir()
-            .map(|h| h == p || h.starts_with(p))
+            .map(|h| platform::path_within(&h, p))
             .unwrap_or(false)
-        || classify(p).0 == "system"
+        || matches!(classify(p).0.as_str(), "system" | "installer")
 }
 
 /// Real home of an adopted version. Registry receipts carry it; for legacy (symlink)
@@ -159,7 +185,7 @@ fn adopted_home(m: &Manager, tool: &str, version: &str, r: &installer::Receipt) 
             detect::resolve_legacy(m, &plugin, version, r)?.0
         }
     };
-    Some(std::fs::canonicalize(&h).unwrap_or(h))
+    Some(platform::canonicalize(&h))
 }
 
 /// Work out what uninstalling `tool version` would do. Never changes anything.
@@ -204,11 +230,19 @@ pub fn plan(m: &Manager, tool: &str, version: &str, mode: Mode) -> Result<Uninst
     }
     let home = adopted_home(m, &tool, version, &r);
     p.home = home.clone();
-    let (cls_provider, cls_formula) = home
+    let env = Env::current();
+    let owner = home
         .as_deref()
-        .map(classify)
-        .unwrap_or_else(|| ("manual".into(), None));
-    let provider = r.provider.clone().unwrap_or(cls_provider);
+        .map(|h| locations::owner(h, &env))
+        .unwrap_or_else(|| Owner {
+            provider: "manual".into(),
+            ..Default::default()
+        });
+    // the location decides; an old receipt only fills in when the location says nothing
+    let provider = match (&r.provider, owner.provider.as_str()) {
+        (Some(rp), "manual") => rp.clone(),
+        _ => owner.provider.clone(),
+    };
     p.provider = Some(provider.clone());
     match mode {
         Mode::Auto => bail!(
@@ -228,116 +262,211 @@ pub fn plan(m: &Manager, tool: &str, version: &str, mode: Mode) -> Result<Uninst
     let home = home.ok_or_else(|| {
         anyhow!("无法定位 {tool} {version} 的真实安装位置，只能移除管理（--forget）")
     })?;
-    let hs = home.to_string_lossy().replace('\\', "/");
-    let user_home = dirs::home_dir().unwrap_or_default();
-    let prefix_of = |marker: &str| -> PathBuf {
-        // "/Users/x/.nvm/versions/..." with marker "/.nvm/" -> "/Users/x/.nvm"
-        PathBuf::from(
-            &hs[..hs
-                .find(marker)
-                .map(|i| i + marker.len() - 1)
-                .unwrap_or(hs.len())],
-        )
+    let user_home = env.home.clone();
+    let id =
+        || -> Result<String> { safe_id(owner.id.as_deref().unwrap_or("")).map(str::to_string) };
+    let package = || -> Result<String> {
+        safe_id(owner.package.as_deref().unwrap_or("")).map(str::to_string)
     };
+    let store = || -> Result<PathBuf> {
+        owner
+            .store
+            .clone()
+            .ok_or_else(|| anyhow!("无法确定 {provider} 的数据目录"))
+    };
+    let disp = |p: &Path| p.display().to_string();
     p.kind = PlanKind::ProviderCommand;
     match provider.as_str() {
         "homebrew" => {
             let formula = r
                 .formula
                 .clone()
-                .or(cls_formula)
+                .or(owner.package.clone())
                 .ok_or_else(|| anyhow!("无法确定 Homebrew formula"))?;
             safe_id(&formula)?;
+            // <prefix>/Cellar -> <prefix>/bin/brew (works for Linuxbrew too)
+            let extra: Vec<PathBuf> = owner
+                .store
+                .as_deref()
+                .and_then(Path::parent)
+                .map(|p| p.join("bin"))
+                .into_iter()
+                .collect();
             p.command = Some(vec![
-                find_tool(m, "brew", &[]),
+                find_tool(m, "brew", &extra),
                 "uninstall".into(),
                 formula.clone(),
             ]);
             p.command_line = Some(format!("brew uninstall {}", q(&formula)));
         }
         "nvm" => {
-            let id = segments_after(&hs, "/.nvm/versions/node/")
-                .first()
-                .copied()
-                .unwrap_or("");
-            let id = safe_id(id)?;
-            let nvm_dir = prefix_of("/.nvm/");
+            let id = id()?;
             let script = format!(
                 "export NVM_DIR={}; source \"$NVM_DIR/nvm.sh\" && nvm uninstall {}",
-                q(&nvm_dir.display().to_string()),
-                q(id)
+                q(&disp(&store()?)),
+                q(&id)
             );
             p.command = Some(vec!["bash".into(), "-c".into(), script.clone()]);
             p.command_line = Some(format!("bash -c {}", q(&script)));
         }
-        "pyenv" => {
-            let id = safe_id(
-                segments_after(&hs, "/.pyenv/versions/")
-                    .first()
-                    .copied()
-                    .unwrap_or(""),
-            )?;
-            let root = prefix_of("/.pyenv/");
+        "nvm-windows" => {
+            // nvm-windows names versions without the leading "v"
+            let id = id()?;
+            let ver = id.trim_start_matches('v').to_string();
+            let root = store()?;
+            p.env.push(("NVM_HOME".into(), disp(&root)));
+            p.command = Some(vec![
+                find_tool(m, "nvm", std::slice::from_ref(&root)),
+                "uninstall".into(),
+                ver.clone(),
+            ]);
+            p.command_line = Some(format!("nvm uninstall {}", q(&ver)));
+        }
+        "pyenv" | "pyenv-win" => {
+            let id = id()?;
+            let root = store()?;
             let exe = find_tool(m, "pyenv", &[root.join("bin")]);
-            p.env
-                .push(("PYENV_ROOT".into(), root.display().to_string()));
-            p.command = Some(vec![exe, "uninstall".into(), "-f".into(), id.into()]);
-            p.command_line = Some(format!("pyenv uninstall -f {}", q(id)));
+            p.env.push(("PYENV_ROOT".into(), disp(&root)));
+            if provider == "pyenv" {
+                p.command = Some(vec![exe, "uninstall".into(), "-f".into(), id.clone()]);
+                p.command_line = Some(format!("pyenv uninstall -f {}", q(&id)));
+            } else {
+                p.command = Some(vec![exe, "uninstall".into(), id.clone()]);
+                p.command_line = Some(format!("pyenv uninstall {}", q(&id)));
+            }
         }
         "sdkman" => {
-            let seg = segments_after(&hs, "/.sdkman/candidates/");
-            let cand = safe_id(seg.first().copied().unwrap_or(""))?;
-            let id = safe_id(seg.get(1).copied().unwrap_or(""))?;
-            let sd = prefix_of("/.sdkman/");
+            let (cand, id) = (package()?, id()?);
             let script = format!(
                 "export SDKMAN_DIR={}; source \"$SDKMAN_DIR/bin/sdkman-init.sh\" && sdk uninstall {} {}",
-                q(&sd.display().to_string()),
-                q(cand),
-                q(id)
+                q(&disp(&store()?)),
+                q(&cand),
+                q(&id)
             );
             p.command = Some(vec!["bash".into(), "-c".into(), script.clone()]);
             p.command_line = Some(format!("bash -c {}", q(&script)));
         }
         "asdf" => {
-            let seg = segments_after(&hs, "/.asdf/installs/");
-            let plugin = safe_id(seg.first().copied().unwrap_or(""))?;
-            let id = safe_id(seg.get(1).copied().unwrap_or(""))?;
-            let data = prefix_of("/.asdf/");
+            let (plugin, id) = (package()?, id()?);
+            let data = store()?;
             let exe = find_tool(m, "asdf", &[data.join("bin")]);
-            p.env
-                .push(("ASDF_DATA_DIR".into(), data.display().to_string()));
-            p.command = Some(vec![exe, "uninstall".into(), plugin.into(), id.into()]);
-            p.command_line = Some(format!("asdf uninstall {} {}", q(plugin), q(id)));
+            p.env.push(("ASDF_DATA_DIR".into(), disp(&data)));
+            p.command = Some(vec![exe, "uninstall".into(), plugin.clone(), id.clone()]);
+            p.command_line = Some(format!("asdf uninstall {} {}", q(&plugin), q(&id)));
+        }
+        "mise" => {
+            let spec = format!("{}@{}", package()?, id()?);
+            let data = store()?;
+            let exe = find_tool(
+                m,
+                "mise",
+                &[
+                    user_home.join(".local").join("bin"),
+                    user_home.join(".cargo").join("bin"),
+                ],
+            );
+            p.env.push(("MISE_DATA_DIR".into(), disp(&data)));
+            p.command = Some(vec![exe, "uninstall".into(), spec.clone()]);
+            p.command_line = Some(format!("mise uninstall {}", q(&spec)));
         }
         "fnm" => {
-            let id = safe_id(
-                segments_after(&hs, "/fnm/node-versions/")
-                    .first()
-                    .copied()
-                    .unwrap_or(""),
-            )?;
-            let fnm_dir = PathBuf::from(&hs[..hs.find("/node-versions/").unwrap_or(hs.len())]);
+            let id = id()?;
+            let fnm_dir = store()?;
             let exe = find_tool(
                 m,
                 "fnm",
                 &[
-                    user_home.join(".local/share/fnm"),
-                    user_home.join(".cargo/bin"),
+                    fnm_dir.clone(),
+                    user_home.join(".local").join("share").join("fnm"),
+                    user_home.join(".cargo").join("bin"),
                 ],
             );
-            p.env
-                .push(("FNM_DIR".into(), fnm_dir.display().to_string()));
-            p.command = Some(vec![exe, "uninstall".into(), id.into()]);
-            p.command_line = Some(format!("fnm uninstall {}", q(id)));
+            p.env.push(("FNM_DIR".into(), disp(&fnm_dir)));
+            p.command = Some(vec![exe, "uninstall".into(), id.clone()]);
+            p.command_line = Some(format!("fnm uninstall {}", q(&id)));
         }
-        "system" => {
-            p.kind = PlanKind::Refuse;
+        "scoop" | "scoop-global" => {
+            // scoop removes the whole app (every version it keeps), not one version dir
+            let app = package()?;
+            let root = store()?;
+            let global = provider == "scoop-global";
+            let exe = find_tool(
+                m,
+                "scoop",
+                &[root.join("shims"), user_home.join("scoop").join("shims")],
+            );
+            let mut argv = vec![exe, "uninstall".into()];
+            if global {
+                argv.push("-g".into());
+            }
+            argv.push(app.clone());
+            p.command_line = Some(format!(
+                "scoop uninstall {}{}",
+                if global { "-g " } else { "" },
+                q(&app)
+            ));
+            p.command = Some(argv);
+            p.needs_root = global;
+            p.paths = vec![root.join("apps").join(&app)];
+            p.paths.extend(runa_paths);
             p.summary = format!(
-                "{} 是系统自带的运行时（由 macOS / Xcode / 系统包管理器管理），runa 不能卸载；可以只移除管理",
+                "通过 scoop 彻底卸载 {app}（scoop 会删除该应用的所有版本）：{}",
+                p.command_line.clone().unwrap_or_default()
+            );
+            return Ok(p);
+        }
+        "winget" => {
+            let pkg = package()?;
+            p.command = Some(vec![
+                find_tool(m, "winget", &[]),
+                "uninstall".into(),
+                "--id".into(),
+                pkg.clone(),
+                "--exact".into(),
+                "--silent".into(),
+            ]);
+            p.command_line = Some(format!("winget uninstall --id {} --exact", q(&pkg)));
+        }
+        "chocolatey" => {
+            // choco needs an elevated shell; runa never elevates
+            let pkg = package()?;
+            p.command = Some(vec![
+                find_tool(m, "choco", &[]),
+                "uninstall".into(),
+                pkg.clone(),
+                "-y".into(),
+            ]);
+            p.command_line = Some(format!("choco uninstall {} -y", q(&pkg)));
+            p.needs_root = true;
+        }
+        "system" | "installer" => {
+            p.kind = PlanKind::Refuse;
+            p.paths = vec![];
+            if provider == "installer" {
+                p.summary = format!(
+                    "{} 由安装程序安装（MSI / 官方安装包 / winget / choco），runa 不会直接删除；请在“设置 › 应用”或用 winget / choco 卸载，然后运行 runa uninstall {tool} {version} --forget；也可以只移除管理",
+                    home.display()
+                );
+                return Ok(p);
+            }
+            // system-provided runtimes are never uninstallable: hard error, not a plan
+            let hint = match locations::linux_package_owner(&home) {
+                Some((pm, pkg)) => {
+                    let rm = if pm == "pacman" {
+                        "pacman -R"
+                    } else if pm == "apt" {
+                        "apt remove"
+                    } else {
+                        "dnf remove"
+                    };
+                    format!("（属于系统软件包 {pkg}，如确需移除请自行执行 `sudo {rm} {pkg}`）")
+                }
+                None => String::new(),
+            };
+            bail!(
+                "{tool} {version} 是系统自带的运行时（{}），禁止卸载{hint}；可以只移除管理（--forget）或禁用",
                 home.display()
             );
-            p.paths = vec![];
-            return Ok(p);
         }
         _ => {
             let target = removal_root(&home);
@@ -349,7 +478,9 @@ pub fn plan(m: &Manager, tool: &str, version: &str, mode: Mode) -> Result<Uninst
             p.kind = PlanKind::RemoveDir;
             p.needs_root = target.parent().map(|d| !writable(d)).unwrap_or(true);
             let tq = q(&target.display().to_string());
-            p.command_line = Some(if p.needs_root {
+            p.command_line = Some(if cfg!(windows) {
+                format!("Remove-Item -LiteralPath {tq} -Recurse -Force")
+            } else if p.needs_root {
                 format!("sudo rm -rf {tq}")
             } else {
                 format!("rm -rf {tq}")
@@ -387,6 +518,21 @@ pub fn execute(m: &Manager, plan: &UninstallPlan) -> Result<()> {
 }
 
 fn execute_inner(m: &Manager, plan: &UninstallPlan) -> Result<()> {
+    // defense in depth: a system runtime is only ever unmanaged, whatever the plan says
+    if plan.kind != PlanKind::Forget
+        && (plan.provider.as_deref() == Some("system")
+            || plan
+                .home
+                .as_deref()
+                .is_some_and(|h| classify(h).0 == "system"))
+        && plan.kind != PlanKind::DeleteInstall
+    {
+        bail!(
+            "{} {} 是系统自带的运行时，禁止卸载",
+            plan.tool,
+            plan.version
+        );
+    }
     match plan.kind {
         PlanKind::Refuse => bail!("{}", plan.summary),
         _ if plan.needs_root => bail!(
@@ -571,15 +717,130 @@ mod tests {
             "/Users/x/Library/Application Support/fnm".into()
         )));
 
-        let p = purge(&m, "python", "3.9.6");
-        assert_eq!(p.kind, PlanKind::Refuse);
-        assert!(execute(&m, &p).is_err());
+        let e = plan(&m, "python", "3.9.6", Mode::Purge).unwrap_err();
+        assert!(format!("{e:#}").contains("禁止卸载"), "{e:#}");
         // forget is always possible and keeps the files
         let f = plan(&m, "python", "3.9.6", Mode::Forget).unwrap();
         assert_eq!(f.kind, PlanKind::Forget);
         assert!(f.paths.iter().all(|p| p.starts_with(&m.paths.root)));
         // adopted versions need an explicit choice
         assert!(plan(&m, "node", "26.8.1", Mode::Auto).is_err());
+    }
+
+    /// Windows and Linux owners plan the owning tool's command (path layouts only, so it
+    /// runs on any host; nothing is executed).
+    #[test]
+    fn windows_and_linux_provider_plans() {
+        let (_t, m) = mgr();
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "node",
+                "20.11.1",
+                r"C:\Users\a\AppData\Roaming\nvm\v20.11.1",
+            ),
+            (
+                "python",
+                "3.12.1",
+                r"C:\Users\a\.pyenv\pyenv-win\versions\3.12.1",
+            ),
+            ("node", "21.6.0", r"C:\Users\a\scoop\apps\nodejs\21.6.0"),
+            (
+                "python",
+                "3.11.0",
+                r"C:\ProgramData\scoop\apps\python\3.11.0",
+            ),
+            (
+                "go",
+                "1.22.0",
+                r"C:\Users\a\AppData\Local\Microsoft\WinGet\Packages\GoLang.Go_Microsoft.Winget.Source_8wekyb3d8bbwe\go",
+            ),
+            (
+                "go",
+                "1.21.0",
+                r"C:\ProgramData\chocolatey\lib\golang\tools\go",
+            ),
+            (
+                "java",
+                "21.0.2",
+                r"C:\Program Files\Eclipse Adoptium\jdk-21.0.2.13-hotspot",
+            ),
+            (
+                "python",
+                "3.10.0",
+                r"C:\Users\a\AppData\Local\Programs\Python\Python310",
+            ),
+            (
+                "node",
+                "18.0.0",
+                "/home/u/.local/share/mise/installs/node/18.0.0",
+            ),
+            ("java", "17.0.10", "/usr/lib/jvm/java-17-openjdk-amd64"),
+        ];
+        for (tool, v, home) in cases {
+            adopt_at(&m, tool, v, home);
+        }
+        let line = |tool: &str, v: &str| purge(&m, tool, v).command_line.unwrap_or_default();
+        let p = purge(&m, "node", "20.11.1");
+        assert_eq!(p.provider.as_deref(), Some("nvm-windows"));
+        assert_eq!(p.command_line.as_deref(), Some("nvm uninstall 20.11.1"));
+        assert!(p.env.iter().any(|(k, _)| k == "NVM_HOME"));
+        assert_eq!(line("python", "3.12.1"), "pyenv uninstall 3.12.1");
+        let p = purge(&m, "node", "21.6.0");
+        assert_eq!(p.command_line.as_deref(), Some("scoop uninstall nodejs"));
+        assert!(!p.needs_root);
+        let p = purge(&m, "python", "3.11.0");
+        assert_eq!(p.command_line.as_deref(), Some("scoop uninstall -g python"));
+        assert!(
+            p.needs_root && execute(&m, &p).is_err(),
+            "runa never elevates"
+        );
+        assert_eq!(
+            line("go", "1.22.0"),
+            "winget uninstall --id GoLang.Go --exact"
+        );
+        let p = purge(&m, "go", "1.21.0");
+        assert_eq!(p.command_line.as_deref(), Some("choco uninstall golang -y"));
+        assert!(p.needs_root);
+        for (t, v) in [("java", "21.0.2"), ("python", "3.10.0")] {
+            let p = purge(&m, t, v);
+            assert_eq!(p.kind, PlanKind::Refuse, "{t} {v}");
+            assert_eq!(p.provider.as_deref(), Some("installer"));
+            assert!(p.paths.is_empty());
+            // unmanaging is always possible
+            assert_eq!(plan(&m, t, v, Mode::Forget).unwrap().kind, PlanKind::Forget);
+        }
+        assert_eq!(line("node", "18.0.0"), "mise uninstall node@18.0.0");
+        assert!(plan(&m, "java", "17.0.10", Mode::Purge).is_err());
+    }
+
+    /// System runtimes on every platform: purge is an error, a forged purge plan is
+    /// refused by execute, unmanaging works and keeps the files.
+    #[test]
+    fn system_runtimes_are_never_uninstallable() {
+        let (_t, m) = mgr();
+        let homes = [
+            "/usr",
+            "/usr/lib/jvm/java-21-openjdk-amd64",
+            "/System/Library/Frameworks/Python.framework/Versions/2.7",
+            "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9",
+            r"C:\Windows\py",
+            r"C:\Users\a\AppData\Local\Microsoft\WindowsApps",
+        ];
+        for (i, h) in homes.iter().enumerate() {
+            let v = format!("1.0.{i}");
+            adopt_at(&m, "python", &v, h);
+            let e = plan(&m, "python", &v, Mode::Purge).unwrap_err();
+            assert!(format!("{e:#}").contains("禁止卸载"), "{h}: {e:#}");
+            let mut forged = plan(&m, "python", &v, Mode::Forget).unwrap();
+            forged.kind = PlanKind::RemoveDir;
+            forged.paths = vec![PathBuf::from(h)];
+            assert!(execute(&m, &forged).is_err(), "{h}");
+            let f = plan(&m, "python", &v, Mode::Forget).unwrap();
+            assert_eq!(f.kind, PlanKind::Forget);
+            assert!(f.paths.iter().all(|p| p.starts_with(&m.paths.root)));
+            execute(&m, &f).unwrap();
+            assert!(!m.is_installed("python", &v));
+        }
     }
 
     #[test]
@@ -591,7 +852,7 @@ mod tests {
         adopt_at(&m, "java", "21.0.11", home.to_str().unwrap());
         let p = purge(&m, "java", "21.0.11");
         assert_eq!(p.kind, PlanKind::RemoveDir);
-        assert_eq!(p.paths[0], std::fs::canonicalize(&bundle).unwrap());
+        assert_eq!(p.paths[0], platform::canonicalize(&bundle));
         assert!(!p.needs_root);
         execute(&m, &p).unwrap();
         assert!(!bundle.exists());
@@ -677,9 +938,11 @@ mod tests {
 
     #[test]
     fn quoting() {
-        assert_eq!(q("node"), "node");
-        assert_eq!(q("a b"), "'a b'");
-        assert_eq!(q("it's"), "'it'\\''s'");
+        assert_eq!(q_sh("node"), "node");
+        assert_eq!(q_sh("a b"), "'a b'");
+        assert_eq!(q_sh("it's"), "'it'\\''s'");
+        assert_eq!(q_powershell(r"C:\Program Files\x"), r"'C:\Program Files\x'");
+        assert_eq!(q_powershell("it's"), "'it''s'");
         assert!(safe_id("v1.2.3").is_ok());
         assert!(safe_id("1;rm").is_err());
         assert!(safe_id("-rf").is_err());

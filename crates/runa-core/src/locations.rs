@@ -378,31 +378,28 @@ fn scoop_apps(tool: &str) -> &'static [&'static str] {
 pub fn vendor_roots(env: &Env, tool: &str) -> Vec<(PathBuf, &'static [&'static str])> {
     let pf = env.program_files();
     let mut v: Vec<(PathBuf, &'static [&'static str])> = Vec::new();
-    match tool {
-        "java" => {
-            v.push((
-                PathBuf::from("/Library/Java/JavaVirtualMachines"),
-                &["Contents", "Home"],
-            ));
-            v.push((PathBuf::from("/usr/lib/jvm"), &[]));
-            v.push((PathBuf::from("/usr/lib64/jvm"), &[]));
-            v.push((PathBuf::from("/usr/java"), &[]));
-            for p in &pf {
-                for vendor in [
-                    "Java",
-                    "Eclipse Adoptium",
-                    "Microsoft",
-                    "Zulu",
-                    "Amazon Corretto",
-                    "BellSoft",
-                    "Semeru",
-                    "OpenJDK",
-                ] {
-                    v.push((p.join(vendor), &[]));
-                }
+    if tool == "java" {
+        v.push((
+            PathBuf::from("/Library/Java/JavaVirtualMachines"),
+            &["Contents", "Home"],
+        ));
+        v.push((PathBuf::from("/usr/lib/jvm"), &[]));
+        v.push((PathBuf::from("/usr/lib64/jvm"), &[]));
+        v.push((PathBuf::from("/usr/java"), &[]));
+        for p in &pf {
+            for vendor in [
+                "Java",
+                "Eclipse Adoptium",
+                "Microsoft",
+                "Zulu",
+                "Amazon Corretto",
+                "BellSoft",
+                "Semeru",
+                "OpenJDK",
+            ] {
+                v.push((p.join(vendor), &[]));
             }
         }
-        _ => {}
     }
     v
 }
@@ -788,6 +785,12 @@ pub fn linux_package_owner(path: &Path) -> Option<(String, String)> {
         let pkg = pkg.split(':').next().unwrap_or(pkg).to_string();
         if !pkg.is_empty() {
             return Some(("apt".into(), pkg));
+        }
+    }
+    if let Some(o) = run("pacman", &["-Qoq"]) {
+        let pkg = o.lines().next()?.trim().to_string();
+        if !pkg.is_empty() && !pkg.contains(' ') {
+            return Some(("pacman".into(), pkg));
         }
     }
     if let Some(o) = run("rpm", &["-qf", "--qf", "%{NAME}\\n"]) {

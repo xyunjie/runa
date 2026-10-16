@@ -232,17 +232,6 @@ pub fn classify(home: &Path) -> (String, Option<String>) {
     (o.provider, formula)
 }
 
-/// Path segments after `marker` (e.g. `/.nvm/versions/node/` -> `["v20.1.0", "bin"]`).
-pub(crate) fn segments_after<'a>(s: &'a str, marker: &str) -> Vec<&'a str> {
-    match s.find(marker) {
-        Some(i) => s[i + marker.len()..]
-            .split('/')
-            .filter(|x| !x.is_empty())
-            .collect(),
-        None => vec![],
-    }
-}
-
 fn run_version(exe: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new(exe)
         .args(args)
