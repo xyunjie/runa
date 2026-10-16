@@ -815,15 +815,13 @@ fn run(cli: Cli) -> Result<i32> {
                     .options
                     .iter()
                     .map(|o| {
-                        format!(
-                            "{}{}",
-                            o.via,
-                            if o.available {
-                                ""
-                            } else {
-                                "（未检测到）"
-                            }
-                        )
+                        if o.available {
+                            o.via.clone()
+                        } else if o.via == "runa" {
+                            format!("runa（{}）", o.detail)
+                        } else {
+                            format!("{}（未检测到）", o.via)
+                        }
                     })
                     .collect();
                 println!(
