@@ -1,4 +1,4 @@
-import { Bot, LayoutGrid, Monitor, Moon, Package, ScanLine, Settings, Sun } from "lucide-react";
+import { Bot, FolderGit2, FolderPlus, LayoutGrid, Monitor, Moon, Package, ScanLine, Settings, Sun } from "lucide-react";
 import type * as React from "react";
 import { Dot, Mark } from "./common";
 import { Segmented } from "./ui/segmented";
@@ -29,6 +29,7 @@ export function Sidebar() {
   const r = useRoute();
   const ov = useStore((s) => s.ov);
   const jobs = useStore((s) => s.jobs);
+  const projects = useStore((s) => s.projects);
   useTheme();
   return (
     <aside className="flex w-[232px] flex-none flex-col border-r border-border bg-sidebar">
@@ -51,6 +52,14 @@ export function Sidebar() {
                 <Dot status={toolStatus(t, !!jobs[t.tool])} />
               </NavItem>
             ))}
+        <Label>项目</Label>
+        {projects.map((p) => (
+          <NavItem key={p} href={`#/project/${encodeURIComponent(p)}`} active={r.name === "project" && r.arg === p}>
+            <FolderGit2 size={16} strokeWidth={1.75} className="flex-none" />
+            <span className="min-w-0 flex-1 truncate" title={p}>{p.split(/[\\/]/).filter(Boolean).pop() || p}</span>
+          </NavItem>
+        ))}
+        <NavItem href="#/projects" active={r.name === "projects"}><FolderPlus size={16} strokeWidth={1.75} />{projects.length ? "管理项目" : "添加项目"}</NavItem>
         <Label>管理</Label>
         <NavItem href="#/detect" active={r.name === "detect"}><ScanLine size={16} strokeWidth={1.75} />检测与接管</NavItem>
         <NavItem href="#/managers" active={r.name === "managers"}><Package size={16} strokeWidth={1.75} />管理器</NavItem>

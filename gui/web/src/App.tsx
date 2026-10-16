@@ -18,6 +18,7 @@ import { DetectPage } from "@/pages/detect";
 import { ManagersPage } from "@/pages/managers";
 import { SettingsPage } from "@/pages/settings";
 import { McpPage } from "@/pages/mcp";
+import { ProjectPage, ProjectsPage, loadProjects } from "@/pages/projects";
 import { McpApprovalHost } from "@/components/mcp-approval";
 
 function Content() {
@@ -37,6 +38,8 @@ function Content() {
     case "detect": return <DetectPage />;
     case "managers": return <ManagersPage />;
     case "mcp": return <McpPage />;
+    case "projects": return <ProjectsPage />;
+    case "project": return <ProjectPage key={r.arg} path={r.arg || ""} />;
     case "settings": return <SettingsPage />;
     default: return <OverviewPage />;
   }
@@ -52,6 +55,7 @@ export function App() {
     window.addEventListener("focus", onFocus);
     load();
     loadDetected();
+    loadProjects();
     return () => { un.forEach((p) => p.then((f) => f())); window.removeEventListener("focus", onFocus); };
   }, []);
   return (

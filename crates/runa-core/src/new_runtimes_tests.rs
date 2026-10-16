@@ -675,3 +675,66 @@ fn post_extract_layouts() {
         PathBuf::from("bun")
     );
 }
+
+#[test]
+fn set_project_version_targets_the_right_file() {
+    let t = tempfile::tempdir().unwrap();
+    let m = Manager::with_paths(crate::Paths::with_root(t.path().join("runa"))).unwrap();
+    let home = t.path().join("home");
+    let proj = home.join("proj");
+    let sub = proj.join("src");
+    std::fs::create_dir_all(&sub).unwrap();
+    let rd = |p: &std::path::Path| std::fs::read_to_string(p).unwrap();
+    // nothing yet: .tool-versions in the directory itself
+    let f = m
+        .set_project_version(&sub, "python", "3.12.1", Some(&home))
+        .unwrap();
+    assert_eq!(f, sub.join(".tool-versions"));
+    assert_eq!(rd(&f), "python 3.12.1\n");
+    // a one-line file in an ancestor is rewritten in place
+    std::fs::write(proj.join(".nvmrc"), "v18\n").unwrap();
+    let f = m
+        .set_project_version(&sub, "node", "20.11.1", Some(&home))
+        .unwrap();
+    assert_eq!(f, proj.join(".nvmrc"));
+    assert_eq!(rd(&f), "20.11.1\n");
+    // package.json engines: .tool-versions next to it, package.json untouched
+    std::fs::remove_file(proj.join(".nvmrc")).unwrap();
+    let pkg = r#"{"name":"x","engines":{"node":">=18"}}"#;
+    std::fs::write(proj.join("package.json"), pkg).unwrap();
+    let f = m
+        .set_project_version(&proj, "node", "22.1.0", Some(&home))
+        .unwrap();
+    assert_eq!(f, proj.join(".tool-versions"));
+    assert_eq!(rd(&proj.join("package.json")), pkg);
+    assert_eq!(
+        crate::resolver::spec_in_dir("node", &proj).unwrap().specs,
+        vec!["22.1.0"]
+    );
+    // existing .tool-versions keeps other tools
+    std::fs::write(proj.join(".tool-versions"), "java 21\nnode 20\n").unwrap();
+    m.set_project_version(&proj, "node", "22.1.0", Some(&home))
+        .unwrap();
+    let tv = rd(&proj.join(".tool-versions"));
+    assert!(tv.contains("java 21") && tv.contains("node 22.1.0") && !tv.contains("node 20"));
+    // the home directory's .tool-versions is never written
+    std::fs::write(home.join(".tool-versions"), "go 1.22\n").unwrap();
+    let f = m
+        .set_project_version(&proj, "go", "1.23.0", Some(&home))
+        .unwrap();
+    assert_eq!(f, proj.join(".tool-versions"));
+    assert_eq!(rd(&home.join(".tool-versions")), "go 1.22\n");
+    // go.mod is not rewritten
+    std::fs::write(sub.join("go.mod"), "module x\ngo 1.21\n").unwrap();
+    let f = m
+        .set_project_version(&sub, "go", "1.23.0", Some(&home))
+        .unwrap();
+    assert_eq!(f, sub.join(".tool-versions"));
+    assert_eq!(rd(&sub.join("go.mod")), "module x\ngo 1.21\n");
+    assert!(m
+        .set_project_version(&sub, "go", "1.2 3", Some(&home))
+        .is_err());
+    assert!(m
+        .set_project_version(&sub, "go", "../x", Some(&home))
+        .is_err());
+}

@@ -64,6 +64,7 @@ pub fn legacy_files(tool: &str) -> &'static [&'static str] {
         "ruby" => &[".ruby-version"],
         "rust" => &["rust-toolchain.toml", "rust-toolchain"],
         "bun" => &[".bun-version"],
+        "deno" => &[".dvmrc", ".deno-version"],
         _ => &[],
     }
 }
@@ -150,6 +151,38 @@ fn sdkman_java(text: &str) -> Option<String> {
         if let Some(rest) = line.strip_prefix("java=") {
             let v = rest.trim();
             return Some(v.split('-').next().unwrap_or(v).to_string());
+        }
+    }
+    None
+}
+
+/// Version files that hold just a version and can be rewritten in place by `runa use`.
+pub fn is_plain_version_file(name: &str) -> bool {
+    matches!(
+        name,
+        ".nvmrc"
+            | ".node-version"
+            | ".python-version"
+            | ".java-version"
+            | ".ruby-version"
+            | ".bun-version"
+            | ".go-version"
+            | ".dvmrc"
+            | ".deno-version"
+    )
+}
+
+/// Nearest project file that sets `tool`, walking up from `cwd` but not into `stop`
+/// (and its ancestors) — typically the user's home, whose `.tool-versions` is global-ish.
+pub fn project_spec(tool: &str, cwd: &Path, stop: Option<&Path>) -> Option<Spec> {
+    for dir in cwd.ancestors() {
+        if let Some(s) = stop {
+            if s.starts_with(dir) {
+                break;
+            }
+        }
+        if let Some(spec) = spec_in_dir(tool, dir) {
+            return Some(spec);
         }
     }
     None
@@ -306,6 +339,39 @@ mod tests {
         // .tool-versions without node falls through to legacy file
         fs::write(d.join(".tool-versions"), "python 3.12\n").unwrap();
         assert_eq!(spec_in_dir("node", d).unwrap().specs, vec!["18"]);
+    }
+
+    #[test]
+    fn deno_and_project_spec_boundary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let proj = home.join("p");
+        let sub = proj.join("src");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(proj.join(".dvmrc"), "2.1.4\n").unwrap();
+        assert_eq!(spec_in_dir("deno", &proj).unwrap().specs, vec!["2.1.4"]);
+        fs::write(home.join(".tool-versions"), "node 18\n").unwrap();
+        // home is a boundary: its .tool-versions is not a project file
+        assert!(project_spec("node", &sub, Some(home)).is_none());
+        assert!(project_spec("node", &sub, None).is_some());
+        assert_eq!(
+            project_spec("deno", &sub, Some(home)).unwrap().source,
+            Source::File(proj.join(".dvmrc"))
+        );
+        assert!(is_plain_version_file(".nvmrc") && !is_plain_version_file("package.json"));
+        // other parsers
+        assert_eq!(
+            parse_legacy("rust-toolchain.toml", "[toolchain]\nchannel = \"1.80.0\"\n").as_deref(),
+            Some("1.80.0")
+        );
+        assert_eq!(
+            parse_legacy("rust-toolchain", "stable\n").as_deref(),
+            Some("stable")
+        );
+        assert_eq!(
+            parse_legacy(".ruby-version", "ruby-3.3.0\n").as_deref(),
+            Some("3.3.0")
+        );
     }
 
     #[test]

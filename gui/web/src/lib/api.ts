@@ -147,6 +147,10 @@ export interface McpStatus { cli_path: string; cli_found: boolean; policy: McpPo
 export interface McpOperation { kind: "install" | "set_global" | "uninstall"; tool: string; version: string; via: string | null; mode: string | null }
 export interface McpApproval { id: string; op: McpOperation; summary: string; details: string[]; client: string | null }
 
+export type ProjectStatus = "ok" | "mismatch" | "missing" | "system";
+export interface ProjectItem { tool: string; required: string; source: string; file: string | null; status: ProjectStatus; resolved: string | null; installed: string[] }
+export interface ProjectDetail { path: string; name: string; exists: boolean; items: ProjectItem[] }
+
 /** `install-progress` payloads (core `Progress`, tagged by `stage`). */
 export type Progress =
   | { stage: "resolving"; tool: string; spec: string }
@@ -206,6 +210,12 @@ export const api = {
   removeShell: (shell: string) => call<string | null>("remove_shell", { shell }),
   addUserPath: () => call<boolean>("add_user_path"),
   reshim: () => call<number>("reshim"),
+  projectsList: () => call<string[]>("projects_list"),
+  projectAdd: (paths: string[]) => call<string[]>("project_add", { paths }),
+  projectRemove: (path: string) => call<string[]>("project_remove", { path }),
+  projectDetail: (path: string) => call<ProjectDetail>("project_detail", { path }),
+  projectSetVersion: (path: string, tool: string, version: string) => call<string>("project_set_version", { path, tool, version }),
+  projectScan: (root: string) => call<string[]>("project_scan", { root }),
   mcpStatus: () => call<McpStatus>("mcp_status"),
   mcpSetPolicy: (policy: McpPolicy) => call<McpPolicy>("mcp_set_policy", { policy }),
   mcpAdd: (id: string) => call<string>("mcp_add", { id }),

@@ -404,6 +404,46 @@ impl Manager {
         Ok(file)
     }
 
+    /// `runa use` / the GUI project page: write `version` to the file that currently sets
+    /// `tool` for `dir` (one-line version files are rewritten in place; `package.json`,
+    /// `go.mod`, `.sdkmanrc`, `rust-toolchain.toml` get a `.tool-versions` next to them,
+    /// which takes precedence in that directory), else `<dir>/.tool-versions`. Files in
+    /// `stop` (usually the home directory) or above are never written.
+    pub fn set_project_version(
+        &self,
+        dir: &Path,
+        tool: &str,
+        version: &str,
+        stop: Option<&Path>,
+    ) -> Result<PathBuf> {
+        let tool = self.plugin(tool)?.name().to_string();
+        crate::installer::validate_version_name(version)?;
+        if version.contains(char::is_whitespace) {
+            bail!("非法版本号: {version:?}");
+        }
+        let found = resolver::project_spec(&tool, dir, stop).and_then(|s| match s.source {
+            resolver::Source::File(p) => Some(p),
+            _ => None,
+        });
+        let Some(file) = found else {
+            return self.set_local(dir, &tool, version);
+        };
+        let name = file
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let plain_rust = name == "rust-toolchain"
+            && !std::fs::read_to_string(&file)
+                .unwrap_or_default()
+                .contains("[toolchain]");
+        if resolver::is_plain_version_file(&name) || plain_rust {
+            crate::storage::write_atomic(&file, format!("{version}\n").as_bytes())?;
+            return Ok(file);
+        }
+        let parent = file.parent().unwrap_or(dir);
+        self.set_local(parent, &tool, version)
+    }
+
     pub fn unset(&self, file: &Path, tool: &str) -> Result<()> {
         toolversions::set_in_file(file, tool, None)
     }

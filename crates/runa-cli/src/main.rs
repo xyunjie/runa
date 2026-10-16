@@ -517,7 +517,8 @@ fn run(cli: Cli) -> Result<i32> {
             let file = if global {
                 m.set_global(&tool, &v)?
             } else {
-                m.set_local(&here, &tool, &v)?
+                let home = dirs_home();
+                m.set_project_version(&here, &tool, &v, home.as_deref())?
             };
             reshim_quiet(&m);
             eprintln!("✓ {tool} {v} → {}", file.display());
@@ -970,11 +971,37 @@ fn run(cli: Cli) -> Result<i32> {
                 let exe = find_exe_in(&sys, &name).ok_or_else(|| anyhow!("找不到命令 {name}"))?;
                 return spawn(&exe, &args, &[], None);
             }
+            let providers = m.providers_of(&name);
+            let mut tools: Vec<&str> = providers.iter().map(|(t, _)| t.as_str()).collect();
+            tools.dedup();
+            // an active virtualenv wins for python commands
+            if tools.contains(&"python") {
+                if let Some(venv) = std::env::var_os("VIRTUAL_ENV").filter(|v| !v.is_empty()) {
+                    let venv = PathBuf::from(venv);
+                    let bin = venv.join(if cfg!(windows) { "Scripts" } else { "bin" });
+                    if let Some(exe) = find_exe_in(&[bin], &name) {
+                        return spawn(&exe, &args, &[], None);
+                    }
+                }
+            }
+            // the project asks for a version that is not installed: say so, never fall
+            // through to another version (and never download from a shim)
+            for t in &tools {
+                if let Some(r) = m.resolve(t, &here) {
+                    if r.version.is_none() && !r.system {
+                        bail!(
+                            "{t} {} 未安装（{} 要求）。运行 `runa install {t} {}` 安装，或用 `runa use {t} <版本>` 改用已安装的版本",
+                            r.wanted(),
+                            r.spec.source.describe(),
+                            r.wanted()
+                        );
+                    }
+                }
+            }
             let plan = m.env_plan(&here, &[])?;
             if find_exe_in(&plan.paths, &name).is_none()
                 && find_exe_in(&m.system_path(), &name).is_none()
             {
-                let providers = m.providers_of(&name);
                 if providers.is_empty() {
                     bail!("找不到命令 {name}");
                 }
@@ -1343,4 +1370,10 @@ pub(crate) fn spawn(
             .with_context(|| format!("执行 {} 失败", exe.display()))?;
         Ok(st.code().unwrap_or(1))
     }
+}
+
+fn dirs_home() -> Option<PathBuf> {
+    std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
 }

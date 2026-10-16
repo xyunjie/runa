@@ -858,8 +858,207 @@ fn start_bridge(app: &AppHandle, state: &Arc<McpState>) {
     }
 }
 
+// ---------------------------------------------------------------- projects
+
+fn projects_file(m: &Manager) -> PathBuf {
+    m.paths.home.join("gui-projects.json")
+}
+
+fn read_projects(m: &Manager) -> Vec<String> {
+    runa_core::storage::read_json::<Vec<String>>(&projects_file(m)).unwrap_or_default()
+}
+
+#[tauri::command]
+async fn projects_list() -> CmdResult<Vec<String>> {
+    blocking(|| Ok(read_projects(&manager()?))).await
+}
+
+#[tauri::command]
+async fn project_add(paths: Vec<String>) -> CmdResult<Vec<String>> {
+    blocking(move || {
+        let m = manager()?;
+        let mut list = read_projects(&m);
+        for p in paths {
+            let dir = PathBuf::from(&p);
+            if !dir.is_dir() {
+                anyhow::bail!("不是文件夹: {p}");
+            }
+            let dir = runa_core::platform::canonicalize(&dir)
+                .display()
+                .to_string();
+            if !list.contains(&dir) {
+                list.push(dir);
+            }
+        }
+        runa_core::storage::write_json(&projects_file(&m), &list)?;
+        Ok(list)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_remove(path: String) -> CmdResult<Vec<String>> {
+    blocking(move || {
+        let m = manager()?;
+        let mut list = read_projects(&m);
+        list.retain(|p| p != &path);
+        runa_core::storage::write_json(&projects_file(&m), &list)?;
+        Ok(list)
+    })
+    .await
+}
+
+#[derive(Serialize)]
+struct ProjectItem {
+    tool: String,
+    required: String,
+    source: String,
+    file: Option<String>,
+    /// `ok` (已满足), `mismatch` (has other versions), `missing` (none installed), `system`.
+    status: String,
+    resolved: Option<String>,
+    installed: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ProjectDetail {
+    path: String,
+    name: String,
+    exists: bool,
+    items: Vec<ProjectItem>,
+}
+
+fn project_items(m: &Manager, dir: &std::path::Path) -> Vec<ProjectItem> {
+    let home = dirs_home();
+    m.registry
+        .names()
+        .into_iter()
+        .filter_map(|t| {
+            let spec = runa_core::resolver::project_spec(&t, dir, home.as_deref())?;
+            let file = match &spec.source {
+                runa_core::Source::File(p) => Some(p.display().to_string()),
+                _ => None,
+            };
+            let required = spec.specs.first().cloned().unwrap_or_default();
+            let system = required == "system";
+            let resolved = (!system)
+                .then(|| spec.specs.iter().find_map(|s| m.match_installed(&t, s)))
+                .flatten();
+            let installed = m.enabled_versions(&t);
+            let status = if system {
+                "system"
+            } else if resolved.is_some() {
+                "ok"
+            } else if !installed.is_empty() {
+                "mismatch"
+            } else {
+                "missing"
+            };
+            Some(ProjectItem {
+                source: spec.source.describe(),
+                tool: t,
+                required,
+                file,
+                status: status.into(),
+                resolved,
+                installed,
+            })
+        })
+        .collect()
+}
+
+#[tauri::command]
+async fn project_detail(path: String) -> CmdResult<ProjectDetail> {
+    blocking(move || {
+        let m = manager()?;
+        let dir = PathBuf::from(&path);
+        let name = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.clone());
+        Ok(ProjectDetail {
+            exists: dir.is_dir(),
+            items: if dir.is_dir() {
+                project_items(&m, &dir)
+            } else {
+                vec![]
+            },
+            path,
+            name,
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn project_set_version(path: String, tool: String, version: String) -> CmdResult<String> {
+    blocking(move || {
+        let dir = PathBuf::from(&path);
+        if !dir.is_dir() {
+            anyhow::bail!("项目目录不存在: {path}");
+        }
+        let m = manager()?;
+        let home = dirs_home();
+        Ok(
+            m.set_project_version(&dir, &tool, &version, home.as_deref())?
+                .display()
+                .to_string(),
+        )
+    })
+    .await
+}
+
+/// Folders under `root` (depth <= 3) that declare runtime versions.
+#[tauri::command]
+async fn project_scan(root: String) -> CmdResult<Vec<String>> {
+    blocking(move || {
+        let m = manager()?;
+        let tools = m.registry.names();
+        let mut out = Vec::new();
+        let mut stack = vec![(PathBuf::from(&root), 0usize)];
+        while let Some((dir, depth)) = stack.pop() {
+            if out.len() >= 200 {
+                break;
+            }
+            if tools
+                .iter()
+                .any(|t| runa_core::resolver::spec_in_dir(t, &dir).is_some())
+            {
+                out.push(dir.display().to_string());
+            }
+            if depth >= 3 {
+                continue;
+            }
+            let Ok(rd) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().to_string();
+                let skip = n.starts_with('.')
+                    || matches!(
+                        n.as_str(),
+                        "node_modules"
+                            | "target"
+                            | "vendor"
+                            | "dist"
+                            | "build"
+                            | "venv"
+                            | "Library"
+                    );
+                if !skip && e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    stack.push((e.path(), depth + 1));
+                }
+            }
+        }
+        out.sort();
+        Ok(out)
+    })
+    .await
+}
+
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             overview,
             remote_versions,
@@ -897,7 +1096,13 @@ fn main() {
             mcp_add,
             mcp_remove,
             mcp_pending,
-            mcp_respond
+            mcp_respond,
+            projects_list,
+            project_add,
+            project_remove,
+            project_detail,
+            project_set_version,
+            project_scan
         ])
         .setup(|app| {
             let state = Arc::new(McpState::default());

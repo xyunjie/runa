@@ -38,6 +38,7 @@ export interface State {
   mgrs: ManagerInfo[] | { error: string } | null;
   detected: { status: "idle" | "loading" | "ok" | "error"; items: Detected[]; error: string | null; createdAt: number; refreshing: boolean };
   migration: MigrationAction[];
+  projects: string[];
 }
 
 let state: State = {
@@ -45,6 +46,7 @@ let state: State = {
   remote: {}, tab: {}, query: {}, filter: {}, pageSize: {}, jobs: {}, installer: {}, mgrs: null,
   detected: { status: "idle", items: [], error: null, createdAt: 0, refreshing: false },
   migration: [],
+  projects: [],
 };
 const subs = new Set<() => void>();
 
