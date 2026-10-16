@@ -12,6 +12,7 @@ const inst = (tool: string, v: string, extra: Record<string, unknown> = {}) => (
 });
 const spec = (tool: string, specs: string[], kind: string, detail: string) => ({ tool, specs, source: { kind, detail } });
 
+let mcpPolicy: any = { mode: "read_only", confirm_destructive: true, confirm_writes: false };
 const ov: any = {
   home: H, cli_path: "/usr/local/bin/runa", cli_found: true, project_dir: "/home/dev/code/web-app", platform: "macos/arm64",
   settings: { mirror: params.get("mirror") || "off", mirror_rules: [], proxy: params.get("proxy") || "system", install_via: {} },
@@ -144,6 +145,26 @@ const handlers: Record<string, (a: any) => Promise<unknown>> = {
   add_user_path: async () => true,
   reshim: async () => 12,
   uninstall: async () => null,
+  mcp_status: async () => ({
+    cli_path: "/usr/local/bin/runa", cli_found: true, bridge_running: true, bridge_error: null, policy: mcpPolicy,
+    clients: [
+      ["cursor", "Cursor", "deeplink", "/home/dev/.cursor/mcp.json", true],
+      ["vscode", "VS Code", "deeplink", "/home/dev/.config/Code/User/mcp.json", false],
+      ["claude-desktop", "Claude Desktop", "file", "/home/dev/.config/Claude/claude_desktop_config.json", false],
+      ["claude-code", "Claude Code", "cli", "/home/dev/.claude.json", false],
+      ["codex", "Codex", "file", "/home/dev/.codex/config.toml", false],
+      ["windsurf", "Windsurf", "file", "/home/dev/.codeium/windsurf/mcp_config.json", false],
+    ].map(([id, name, method, config_path, added]) => ({
+      id, name, method, config_path, added, link: method === "deeplink" ? "#" : null, cli: id === "claude-code" ? "/home/dev/.local/bin/claude" : null,
+      command_line: id === "claude-code" ? "claude mcp add --scope user runa -- /usr/local/bin/runa mcp" : null,
+      snippet: id === "codex" ? '[mcp_servers.runa]\ncommand = "/usr/local/bin/runa"\nargs = ["mcp"]\n' : '{\n  "mcpServers": {\n    "runa": { "command": "/usr/local/bin/runa", "args": ["mcp"] }\n  }\n}\n',
+    })),
+  }),
+  mcp_set_policy: async ({ policy }) => { mcpPolicy = policy; return policy; },
+  mcp_add: async () => "已添加",
+  mcp_remove: async () => "已移除",
+  mcp_pending: async () => params.get("approval") ? [{ id: "demo", op: { kind: "uninstall", tool: "node", version: "20.20.2", via: null, mode: "auto" }, summary: "卸载 node 20.20.2：删除 /home/dev/.runa/installs/node/20.20.2", details: ["删除 /home/dev/.runa/installs/node/20.20.2"], client: "cursor" }] : [],
+  mcp_respond: async () => null,
   uninstall_plan: async ({ tool, version, mode }) => ({
     tool, version, kind: mode === "forget" ? "forget" : mode === "purge" ? "provider_command" : "delete_install",
     provider: mode === "auto" ? null : "nvm", command: null, env: [],

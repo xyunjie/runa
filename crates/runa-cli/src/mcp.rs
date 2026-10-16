@@ -130,7 +130,32 @@ pub fn command(
     if client.is_some() && op != "config" {
         bail!("--client 仅用于 runa mcp config");
     }
-    let dir = project.ok_or_else(|| anyhow!("MCP 需要明确的 --project <目录>"))?;
+    let Some(dir) = project else {
+        // global server: runtime management under the desktop app's MCP policy
+        if op == "config" {
+            let exe = std::env::current_exe()?;
+            let (c, text) = generate(
+                client.unwrap_or(""),
+                platform(),
+                &exe.display().to_string(),
+                &runa_core::mcp::server_args(),
+            )?;
+            let loc = runa_core::mcp::ClientEnv::current()
+                .ok()
+                .and_then(|e| runa_core::mcp::config_file(c.id, &e))
+                .map(|f| f.0.display().to_string())
+                .unwrap_or(c.location.clone());
+            eprintln!("# {}：保存到 {loc}\n# {}", c.name, c.instructions);
+            print!("{text}");
+            return Ok(0);
+        }
+        if read_only {
+            bail!(
+                "全局 MCP 服务的读写权限在 Runa 桌面端 → MCP 中设置；--read-only 仅用于 --project"
+            );
+        }
+        return crate::mcp_server::run();
+    };
     let root = project::project_directory(dir)?;
     let exe = std::env::current_exe()?;
     let root_s = root.display().to_string();

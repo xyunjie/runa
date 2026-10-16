@@ -25,7 +25,8 @@ export interface ToolStatus {
   current: Resolved | null;
 }
 export interface MirrorRule { from: string; to: string }
-export interface Settings { mirror: string; mirror_rules: MirrorRule[]; proxy: string; install_via?: Record<string, string> }
+export interface McpPolicy { mode: "read_only" | "allow_write"; confirm_destructive: boolean; confirm_writes: boolean }
+export interface Settings { mirror: string; mirror_rules: MirrorRule[]; proxy: string; install_via?: Record<string, string>; mcp?: McpPolicy }
 export interface ShellInfo { shell: string; profile: string; configured: boolean }
 export interface Overview {
   home: string;
@@ -131,6 +132,21 @@ export interface MigrationAction {
 export interface AdoptResult { version: string; set_global: boolean }
 export interface AdoptOutcome { tool: string; version: string; home: string; adopted_as: string | null; set_global: boolean; error: string | null }
 
+export interface McpClient {
+  id: string;
+  name: string;
+  method: "deeplink" | "file" | "cli";
+  config_path: string | null;
+  added: boolean;
+  snippet: string;
+  link: string | null;
+  cli: string | null;
+  command_line: string | null;
+}
+export interface McpStatus { cli_path: string; cli_found: boolean; policy: McpPolicy; bridge_running: boolean; bridge_error: string | null; clients: McpClient[] }
+export interface McpOperation { kind: "install" | "set_global" | "uninstall"; tool: string; version: string; via: string | null; mode: string | null }
+export interface McpApproval { id: string; op: McpOperation; summary: string; details: string[]; client: string | null }
+
 /** `install-progress` payloads (core `Progress`, tagged by `stage`). */
 export type Progress =
   | { stage: "resolving"; tool: string; spec: string }
@@ -190,6 +206,12 @@ export const api = {
   removeShell: (shell: string) => call<string | null>("remove_shell", { shell }),
   addUserPath: () => call<boolean>("add_user_path"),
   reshim: () => call<number>("reshim"),
+  mcpStatus: () => call<McpStatus>("mcp_status"),
+  mcpSetPolicy: (policy: McpPolicy) => call<McpPolicy>("mcp_set_policy", { policy }),
+  mcpAdd: (id: string) => call<string>("mcp_add", { id }),
+  mcpRemove: (id: string) => call<string>("mcp_remove", { id }),
+  mcpPending: () => call<McpApproval[]>("mcp_pending"),
+  mcpRespond: (id: string, approved: boolean) => call<void>("mcp_respond", { id, approved }),
 };
 
 // ---------------------------------------------------------------- events
@@ -197,4 +219,6 @@ export const events = {
   installProgress: (f: (p: Progress) => void) => on<Progress>("install-progress", f),
   managerProgress: (f: (p: ManagerLine) => void) => on<ManagerLine>("manager-progress", f),
   detectUpdated: (f: (r: DetectReport) => void) => on<DetectReport>("detect-updated", f),
+  mcpApproval: (f: (r: McpApproval) => void) => on<McpApproval>("mcp-approval", f),
+  mcpApprovalDone: (f: (id: string) => void) => on<string>("mcp-approval-done", f),
 };

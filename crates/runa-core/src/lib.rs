@@ -15,6 +15,7 @@ pub mod locations;
 pub mod manager;
 pub mod manager_admin;
 pub mod managers;
+pub mod mcp;
 pub mod net;
 pub mod paths;
 pub mod platform;

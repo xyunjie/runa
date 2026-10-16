@@ -1,4 +1,4 @@
-import { LayoutGrid, Monitor, Moon, Package, ScanLine, Settings, Sun } from "lucide-react";
+import { Bot, LayoutGrid, Monitor, Moon, Package, ScanLine, Settings, Sun } from "lucide-react";
 import type * as React from "react";
 import { Dot, Mark } from "./common";
 import { Segmented } from "./ui/segmented";
@@ -54,6 +54,7 @@ export function Sidebar() {
         <Label>管理</Label>
         <NavItem href="#/detect" active={r.name === "detect"}><ScanLine size={16} strokeWidth={1.75} />检测与接管</NavItem>
         <NavItem href="#/managers" active={r.name === "managers"}><Package size={16} strokeWidth={1.75} />管理器</NavItem>
+        <NavItem href="#/mcp" active={r.name === "mcp"}><Bot size={16} strokeWidth={1.75} />MCP</NavItem>
         <NavItem href="#/settings" active={r.name === "settings"}><Settings size={16} strokeWidth={1.75} />设置</NavItem>
       </nav>
       <div className="px-4 pb-5 pt-4">

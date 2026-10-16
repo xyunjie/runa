@@ -67,6 +67,7 @@ runa activate fish | source
 | `runa run [--install-missing] -- <命令>` | 按项目声明的版本执行；`--install-missing` 先补装缺失版本（强制 SHA256）；docker 项目在容器中执行 |
 | `runa context [--json] [--check]` | 给 Agent / AI 的只读版本上下文：项目要求、解析 / 已激活版本、冲突与建议命令；`--check` 未就绪时退出码为 1 |
 | `runa project init [--mode local\|versions\|docker] [--image 镜像]` / `runa project status [--json]` | 一个项目一个环境，默认 local 隔离 |
+| `runa mcp` | 全局 MCP stdio 服务：list_runtimes / list_available / detect_project / list_managers（只读），install / set_global / uninstall（写入，受桌面端 MCP 权限约束；卸载默认需在桌面端确认）。在 Runa 桌面端 → MCP 一键添加到 Cursor、VS Code、Claude Desktop、Claude Code、Codex、Windsurf |
 | `runa mcp [serve\|config] --project <目录> [--read-only] [--client <客户端>]` | MCP stdio 服务，或输出 AI 客户端配置（cursor / claude-desktop / claude-code / codex / vscode / windsurf / generic） |
 | `runa shell <工具> <版本> [shell]` | 打开临时子 shell 使用某版本（不写任何配置，`exit` 即恢复） |
 | `runa size [工具] [--json]` / `runa clean [--json]` | 统计各版本磁盘占用 / 清理下载缓存 |

@@ -17,6 +17,8 @@ import { ToolPage } from "@/pages/tool";
 import { DetectPage } from "@/pages/detect";
 import { ManagersPage } from "@/pages/managers";
 import { SettingsPage } from "@/pages/settings";
+import { McpPage } from "@/pages/mcp";
+import { McpApprovalHost } from "@/components/mcp-approval";
 
 function Content() {
   const r = useRoute();
@@ -34,6 +36,7 @@ function Content() {
     case "tool": return <ToolPage key={r.arg} name={r.arg || ""} />;
     case "detect": return <DetectPage />;
     case "managers": return <ManagersPage />;
+    case "mcp": return <McpPage />;
     case "settings": return <SettingsPage />;
     default: return <OverviewPage />;
   }
@@ -59,6 +62,7 @@ export function App() {
         <div ref={main} className="flex-1 overflow-y-auto outline-none" tabIndex={-1}><Content /></div>
       </main>
       <DialogHost />
+      <McpApprovalHost />
       <Toaster />
     </div>
   );

@@ -574,6 +574,290 @@ async fn reshim() -> CmdResult<usize> {
     blocking(|| Ok(activate::reshim(&manager()?, &activate::cli_path())?.len())).await
 }
 
+// ---------------------------------------------------------------- MCP
+
+use runa_core::mcp::{self as core_mcp, ApprovalRequest, Bridge, ClientEnv, Policy};
+use std::collections::HashMap;
+use std::sync::{mpsc, Arc, Mutex};
+use tauri::Manager as _;
+
+#[derive(Default)]
+struct McpState {
+    pending: Mutex<HashMap<String, (ApprovalRequest, mpsc::Sender<bool>)>>,
+    bridge: Mutex<Option<Bridge>>,
+    bridge_error: Mutex<Option<String>>,
+}
+
+#[derive(Serialize)]
+struct McpClientView {
+    id: String,
+    name: String,
+    /// `deeplink`, `file` or `cli`.
+    method: String,
+    config_path: Option<String>,
+    added: bool,
+    snippet: String,
+    link: Option<String>,
+    /// Claude Code: the `claude` CLI that `一键添加` runs.
+    cli: Option<String>,
+    command_line: Option<String>,
+}
+
+#[derive(Serialize)]
+struct McpStatus {
+    cli_path: String,
+    cli_found: bool,
+    policy: Policy,
+    bridge_running: bool,
+    bridge_error: Option<String>,
+    clients: Vec<McpClientView>,
+}
+
+fn cli_exe() -> anyhow::Result<String> {
+    let cli = activate::cli_path();
+    if !activate::cli_available(&cli) {
+        anyhow::bail!(
+            "未找到 runa 命令行程序，无法配置 MCP。请先把 runa 放到 PATH 中或与 Runa 同目录"
+        );
+    }
+    let abs = std::fs::canonicalize(&cli).unwrap_or(cli);
+    Ok(runa_core::platform::strip_verbatim(abs)
+        .display()
+        .to_string())
+}
+
+fn client_views(exe: &str) -> anyhow::Result<Vec<McpClientView>> {
+    let env = ClientEnv::current()?;
+    let claude = core_mcp::find_claude_cli(&env);
+    Ok(core_mcp::CLIENT_IDS
+        .iter()
+        .map(|id| {
+            let (method, link) = match *id {
+                "cursor" => ("deeplink", Some(core_mcp::cursor_link(exe))),
+                "vscode" => ("deeplink", Some(core_mcp::vscode_link(exe))),
+                "claude-code" => ("cli", None),
+                _ => ("file", None),
+            };
+            let line = core_mcp::shell_line("claude", &core_mcp::claude_add_args(exe));
+            McpClientView {
+                id: id.to_string(),
+                name: core_mcp::client_name(id).to_string(),
+                method: method.into(),
+                config_path: core_mcp::config_file(id, &env).map(|c| c.0.display().to_string()),
+                added: core_mcp::is_added(id, &env),
+                snippet: if *id == "claude-code" {
+                    format!(
+                        "{line}\n\n# 或写入 ~/.claude.json 的 mcpServers：\n{}",
+                        core_mcp::snippet(id, exe)
+                    )
+                } else {
+                    core_mcp::snippet(id, exe)
+                },
+                link,
+                cli: (*id == "claude-code")
+                    .then(|| claude.as_ref().map(|p| p.display().to_string()))
+                    .flatten(),
+                command_line: (*id == "claude-code").then_some(line),
+            }
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn mcp_status(state: tauri::State<'_, Arc<McpState>>) -> CmdResult<McpStatus> {
+    let bridge_running = state.bridge.lock().unwrap().is_some();
+    let bridge_error = state.bridge_error.lock().unwrap().clone();
+    blocking(move || {
+        let m = manager()?;
+        let cli = activate::cli_path();
+        let exe = cli_exe().unwrap_or_else(|_| cli.display().to_string());
+        Ok(McpStatus {
+            cli_found: activate::cli_available(&cli),
+            cli_path: exe.clone(),
+            policy: m.settings.mcp.clone(),
+            bridge_running,
+            bridge_error,
+            clients: client_views(&exe)?,
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn mcp_set_policy(policy: Policy) -> CmdResult<Policy> {
+    blocking(move || {
+        policy.validate()?;
+        let mut m = manager()?;
+        m.settings.mcp = policy;
+        m.save_settings()?;
+        Ok(m.settings.mcp.clone())
+    })
+    .await
+}
+
+fn open_url(url: &str) -> anyhow::Result<()> {
+    let mut c = if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else if cfg!(windows) {
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    let st = c.arg(url).status()?;
+    if !st.success() {
+        anyhow::bail!("无法打开链接，请确认已安装对应的客户端；也可以使用“复制配置”手动添加");
+    }
+    Ok(())
+}
+
+fn run_claude(cli: &std::path::Path, args: &[String]) -> anyhow::Result<String> {
+    let out = std::process::Command::new(cli)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if !out.status.success() {
+        anyhow::bail!("claude {} 失败：{}", args.join(" "), text.trim());
+    }
+    Ok(text.trim().to_string())
+}
+
+/// 一键添加. Returns a message for the toast.
+#[tauri::command]
+async fn mcp_add(id: String) -> CmdResult<String> {
+    blocking(move || {
+        let exe = cli_exe()?;
+        let env = ClientEnv::current()?;
+        let name = core_mcp::client_name(&id);
+        match id.as_str() {
+            "cursor" => {
+                open_url(&core_mcp::cursor_link(&exe))?;
+                Ok("已打开 Cursor，请在 Cursor 中确认安装".into())
+            }
+            "vscode" => {
+                open_url(&core_mcp::vscode_link(&exe))?;
+                Ok("已打开 VS Code，请在 VS Code 中确认安装".into())
+            }
+            "claude-code" => {
+                let cli = core_mcp::find_claude_cli(&env).ok_or_else(|| {
+                    anyhow::anyhow!("未找到 claude 命令，请使用“复制配置”手动添加")
+                })?;
+                // replace an existing entry (add fails when the name exists)
+                let _ = run_claude(&cli, &core_mcp::claude_remove_args());
+                run_claude(&cli, &core_mcp::claude_add_args(&exe))?;
+                Ok("已通过 claude mcp add 添加到 Claude Code（用户级）".into())
+            }
+            "claude-desktop" | "codex" | "windsurf" => {
+                let c = core_mcp::add_to_file(&id, &env, &exe)?;
+                if !c.changed {
+                    return Ok(format!("{name} 已配置 runa，无需修改"));
+                }
+                let b = c
+                    .backup
+                    .map(|b| format!("，原文件已备份到 {}", b.display()))
+                    .unwrap_or_default();
+                Ok(format!("已写入 {}{b}。请重启 {name}", c.path.display()))
+            }
+            _ => anyhow::bail!("未知客户端 {id}"),
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+async fn mcp_remove(id: String) -> CmdResult<String> {
+    blocking(move || {
+        let env = ClientEnv::current()?;
+        if id == "claude-code" {
+            let cli = core_mcp::find_claude_cli(&env).ok_or_else(|| {
+                anyhow::anyhow!("未找到 claude 命令，请运行 claude mcp remove --scope user runa")
+            })?;
+            run_claude(&cli, &core_mcp::claude_remove_args())?;
+            return Ok("已从 Claude Code 移除 runa".into());
+        }
+        let c = core_mcp::remove_from_file(&id, &env)?;
+        if !c.changed {
+            return Ok("配置文件中没有 runa".into());
+        }
+        let b = c
+            .backup
+            .map(|b| format!("，原文件已备份到 {}", b.display()))
+            .unwrap_or_default();
+        Ok(format!("已从 {} 移除 runa{b}", c.path.display()))
+    })
+    .await
+}
+
+#[tauri::command]
+fn mcp_pending(state: tauri::State<'_, Arc<McpState>>) -> Vec<ApprovalRequest> {
+    state
+        .pending
+        .lock()
+        .unwrap()
+        .values()
+        .map(|(r, _)| r.clone())
+        .collect()
+}
+
+#[tauri::command]
+fn mcp_respond(
+    state: tauri::State<'_, Arc<McpState>>,
+    id: String,
+    approved: bool,
+) -> CmdResult<()> {
+    let tx = state.pending.lock().unwrap().remove(&id).map(|(_, tx)| tx);
+    match tx {
+        Some(tx) => {
+            let _ = tx.send(approved);
+            Ok(())
+        }
+        None => Err("该请求已失效（超时或已处理）".into()),
+    }
+}
+
+fn start_bridge(app: &AppHandle, state: &Arc<McpState>) {
+    let home = match manager() {
+        Ok(m) => m.paths.home.clone(),
+        Err(e) => {
+            *state.bridge_error.lock().unwrap() = Some(err(e));
+            return;
+        }
+    };
+    let (app2, st) = (app.clone(), state.clone());
+    let decide: core_mcp::Decide = Arc::new(move |req: ApprovalRequest| {
+        let id = req.id.clone();
+        let (tx, rx) = mpsc::channel();
+        st.pending
+            .lock()
+            .unwrap()
+            .insert(id.clone(), (req.clone(), tx));
+        let _ = app2.emit("mcp-approval", &req);
+        if let Some(w) = app2.get_webview_window("main") {
+            let _ = w.unminimize();
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+        let r = rx.recv_timeout(Duration::from_secs(290));
+        st.pending.lock().unwrap().remove(&id);
+        let _ = app2.emit("mcp-approval-done", &id);
+        match r {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("用户在 Runa 桌面端拒绝了该操作".into()),
+            Err(_) => Err("等待确认超时，操作未执行".into()),
+        }
+    });
+    match Bridge::start(&home, decide) {
+        Ok(b) => *state.bridge.lock().unwrap() = Some(b),
+        Err(e) => *state.bridge_error.lock().unwrap() = Some(err(e)),
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -607,8 +891,29 @@ fn main() {
             setup_shell,
             remove_shell,
             add_user_path,
-            reshim
+            reshim,
+            mcp_status,
+            mcp_set_policy,
+            mcp_add,
+            mcp_remove,
+            mcp_pending,
+            mcp_respond
         ])
-        .run(tauri::generate_context!())
-        .expect("启动 Runa 失败");
+        .setup(|app| {
+            let state = Arc::new(McpState::default());
+            start_bridge(app.handle(), &state);
+            app.manage(state);
+            Ok(())
+        })
+        .build(tauri::generate_context!())
+        .expect("启动 Runa 失败")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(s) = app.try_state::<Arc<McpState>>() {
+                    if let Some(b) = s.bridge.lock().unwrap().as_ref() {
+                        b.remove_file();
+                    }
+                }
+            }
+        });
 }

@@ -25,6 +25,8 @@ pub struct Settings {
     /// version manager, else runa's download), `runa`, or a manager name (`nvm`,
     /// `nvm-windows`, `fnm`, `pyenv`, `pyenv-win`, `sdkman`, `asdf`, `mise`).
     pub install_via: std::collections::BTreeMap<String, String>,
+    /// What AI agents may do through `runa mcp` (see [`crate::mcp::Policy`]).
+    pub mcp: crate::mcp::Policy,
 }
 
 impl Default for Settings {
@@ -34,6 +36,7 @@ impl Default for Settings {
             mirror_rules: vec![],
             proxy: "system".into(),
             install_via: Default::default(),
+            mcp: Default::default(),
         }
     }
 }
