@@ -273,6 +273,76 @@ async fn install_manager(
     .await
 }
 
+fn emit_line(app: &AppHandle, name: &str, line: String) {
+    let _ = app.emit(
+        "manager-progress",
+        ManagerLine {
+            name: name.to_string(),
+            line,
+        },
+    );
+}
+
+/// Install a version manager from the 管理器 page (no installer preference change).
+#[tauri::command]
+async fn install_manager_only(app: AppHandle, name: String) -> CmdResult<()> {
+    blocking(move || {
+        let m = manager()?;
+        let probe = runa_core::managers::Probe::current(&m);
+        let method = runa_core::bootstrap::plan(&probe, &name)?;
+        runa_core::bootstrap::install(&probe, &method, None, &mut |l| emit_line(&app, &name, l))?;
+        runa_core::detect::invalidate_cache(&m);
+        Ok(())
+    })
+    .await
+}
+
+/// Version managers relevant to this platform with status, version, origin, runtimes.
+#[tauri::command]
+async fn manager_info() -> CmdResult<Vec<runa_core::manager_admin::ManagerInfo>> {
+    blocking(move || {
+        let m = manager()?;
+        Ok(runa_core::manager_admin::info(
+            &m,
+            &runa_core::managers::Probe::current(&m),
+        ))
+    })
+    .await
+}
+
+/// Dry run of upgrading / uninstalling a manager. Changes nothing.
+#[tauri::command]
+async fn manager_plan(
+    name: String,
+    action: String,
+) -> CmdResult<runa_core::manager_admin::ManagerPlan> {
+    blocking(move || {
+        let m = manager()?;
+        runa_core::manager_admin::plan(&m, &runa_core::managers::Probe::current(&m), &name, &action)
+    })
+    .await
+}
+
+/// Upgrade / uninstall a manager (re-planned here, output as `manager-progress`).
+#[tauri::command]
+async fn manager_execute(
+    app: AppHandle,
+    name: String,
+    action: String,
+) -> CmdResult<runa_core::manager_admin::ExecReport> {
+    blocking(move || {
+        let m = manager()?;
+        let probe = runa_core::managers::Probe::current(&m);
+        let plan = runa_core::manager_admin::plan(&m, &probe, &name, &action)?;
+        let rep = runa_core::manager_admin::execute(&m, &probe, &plan, &mut |l| {
+            emit_line(&app, &name, l)
+        })?;
+        let _ = activate::reshim(&m, &activate::cli_path());
+        Ok(rep)
+    })
+    .await
+}
+
 /// What uninstalling would do (shown in the confirmation dialog). Changes nothing.
 #[tauri::command]
 async fn uninstall_plan(tool: String, version: String, mode: Mode) -> CmdResult<UninstallPlan> {
@@ -501,6 +571,10 @@ fn main() {
             set_install_via,
             manager_install_plan,
             install_manager,
+            install_manager_only,
+            manager_info,
+            manager_plan,
+            manager_execute,
             uninstall,
             uninstall_plan,
             set_disabled,

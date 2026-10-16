@@ -7,6 +7,7 @@ const invoke = (cmd, args = {}) => T.core.invoke(cmd, args);
 // ---------------------------------------------------------------- state
 const S = {
   installer: {}, // tool -> InstallerChoice from backend
+  mgrs: null, // manager_info result
   viaOpen: null, // tool whose 安装方式 dropdown is open
   ov: null, // overview from backend
   loading: true,
@@ -348,7 +349,7 @@ function render() {
     return;
   }
   const r = route();
-  const html = r.name === "tool" ? pageTool(r.arg) : r.name === "detect" ? pageDetect() : r.name === "settings" ? pageSettings() : pageOverview();
+  const html = r.name === "tool" ? pageTool(r.arg) : r.name === "detect" ? pageDetect() : r.name === "managers" ? pageManagers() : r.name === "settings" ? pageSettings() : pageOverview();
   // keep focus & caret inside the search box across re-renders
   const active = document.activeElement;
   const keep = active?.id && c.contains(active) ? { id: active.id, pos: active.selectionStart } : null;
@@ -446,7 +447,7 @@ function jobCard(tool) {
   const indet = j.stage !== "downloading" || pct == null;
   const stageText = { resolving: "正在解析版本…", downloading: "正在下载", verifying: "正在校验 SHA256…", extracting: "正在解压…", manager: `通过 ${j.via || "版本管理器"} 安装：${j.command || ""}`, output: `通过 ${j.via || "版本管理器"} 安装：${j.line || ""}`, done: "完成" }[j.stage] || "准备中…";
   return `<div class="card progress-card" role="status" aria-live="polite">
-    <div class="progress-top"><div class="t">${icon("refresh", 14, "spin")}安装 ${j.mgr ? esc(j.via) : `${esc(tool)} ${esc(j.version || j.spec || "")}`}</div>
+    <div class="progress-top"><div class="t">${icon("refresh", 14, "spin")}${j.title ? esc(j.title) : `安装 ${j.mgr ? esc(j.via) : `${esc(tool)} ${esc(j.version || j.spec || "")}`}`}</div>
       <div class="n">${pct != null && j.stage === "downloading" ? pct + "%" : ""}</div></div>
     <div class="bar ${indet ? "indeterminate" : ""}"><i style="width:${indet ? "" : pct + "%"}"></i></div>
     <div class="progress-meta"><span>${stageText}</span>
@@ -525,6 +526,88 @@ function availableList(t) {
 }
 
 // ---------------------------------------------------------------- page: detect
+// ---------------------------------------------------------------- page: managers
+const ORIGINS = { brew: "Homebrew", winget: "winget", scoop: "Scoop", script: "官方脚本", git: "git", system: "系统", unknown: "未知" };
+async function loadManagers() {
+  try { S.mgrs = await invoke("manager_info"); } catch (e) { S.mgrs = { error: String(e) }; }
+  if (route().name === "managers") render();
+}
+function pageManagers() {
+  if (S.mgrs == null) setTimeout(loadManagers);
+  const jobs = Object.keys(S.jobs).filter((k) => k.startsWith("mgr:")).map(jobCard).join("");
+  let body;
+  if (S.mgrs == null) body = `<div class="list">${[1, 2, 3].map(() => `<div class="item"><div class="main-col"><div class="skel" style="width:120px;height:11px"></div><div class="skel" style="width:240px;height:9px;margin-top:8px"></div></div></div>`).join("")}</div>`;
+  else if (S.mgrs.error) body = `<div class="callout danger"><span data-icon="alert"></span><div class="grow"><div class="t">读取失败</div><div class="d">${esc(S.mgrs.error)}</div></div></div>`;
+  else body = `<div class="list">${S.mgrs.filter((i) => i.supported).map((i) => {
+    const busy = !!S.jobs[`mgr:${i.name}`];
+    const meta = i.installed
+      ? [i.version ? `v${i.version}` : "", `安装方式：${ORIGINS[i.origin] || i.origin}`, `管理 ${i.runtimes.length} 个已登记运行时`].filter(Boolean).join(" · ")
+      : (i.install_method ? `可通过 ${ORIGINS[i.install_method.method] || i.install_method.method} 安装` : "当前没有可用的安装方式");
+    const path = i.data_dir || i.entry || "";
+    const actions = i.installed
+      ? `<button class="btn btn-sm" data-act="mgr-upgrade" data-name="${esc(i.name)}" ${busy ? "disabled" : ""}>升级</button>
+         <button class="btn btn-sm btn-danger" data-act="mgr-uninstall" data-name="${esc(i.name)}" ${busy ? "disabled" : ""}>卸载</button>`
+      : i.install_method ? `<button class="btn btn-sm btn-primary" data-act="mgr-install" data-name="${esc(i.name)}" ${busy ? "disabled" : ""}>${icon("download", 13)}安装</button>` : "";
+    return `<div class="item"><div class="main-col"><div class="title">${esc(PROVIDERS[i.name] || i.name)} <span class="muted" style="font-weight:400">${esc(i.tools.join(" / "))}</span>
+        ${i.installed ? `<span class="badge ok">${icon("check", 11)}已安装</span>` : `<span class="badge">未安装</span>`}</div>
+        <div class="meta">${esc(meta)}</div>${path ? `<div class="meta mono" title="${esc(path)}">${esc(path)}</div>` : ""}</div>
+      <div class="actions show">${actions}</div></div>`;
+  }).join("")}</div>`;
+  return `<div class="page">
+    <div class="page-head"><div><h1 class="page-title">版本管理器</h1><div class="page-sub">nvm、fnm、pyenv、SDKMAN!、asdf、mise 等。通过它们安装的运行时会自动登记，卸载也会经过它们。</div></div>
+      <button class="btn" data-act="mgr-refresh">${icon("refresh", 14)}刷新</button></div>
+    ${jobs}${body}</div>`;
+}
+
+function mgrPlanHtml(p) {
+  const li = (xs) => `<ul style="margin:4px 0 8px 18px;padding:0">${xs.join("")}</ul>`;
+  let h = `<p>${esc(p.summary)}</p>`;
+  if (p.command_line) h += `<div style="margin-top:8px">将执行：<code class="mono" style="display:block;white-space:pre-wrap;margin:4px 0">${esc(p.command_line)}</code></div>`;
+  if (p.remove_dirs.length) h += `<div>将删除目录：${li(p.remove_dirs.map((d) => `<li class="mono">${esc(d)}</li>`))}</div>`;
+  if (p.rc_edits.length) h += `<div>将从 shell 配置文件移除以下行（原文件备份为 .runa-bak）：${p.rc_edits.map((e) => `<div class="mono" style="margin-top:4px">${esc(e.file)}</div>${li(e.lines.map(([n, l]) => `<li class="mono">${n}: ${esc(l)}</li>`))}`).join("")}</div>`;
+  if (p.runtimes.length) h += `<div class="callout warn" style="margin-top:8px"><div class="grow"><div class="t">以下运行时也会被删除并从 runa 取消登记</div><div class="d">${p.runtimes.map((r) => `${esc(r.tool)} ${esc(r.version)}${r.global ? "（runa 全局）" : ""}`).join("、")}</div></div></div>`;
+  return h;
+}
+
+async function managerAction(name, action) {
+  let plan;
+  try { plan = await invoke("manager_plan", { name, action }); }
+  catch (e) { toast(`无法${action === "upgrade" ? "升级" : "卸载"} ${name}`, String(e), "error"); return; }
+  const label = PROVIDERS[name] || name;
+  const verb = action === "upgrade" ? "升级" : "卸载";
+  if (plan.kind === "refuse") { await confirmDialog({ title: `${verb} ${label}`, body: `${esc(plan.summary)}`, ok: "知道了" }); return; }
+  if (!(await confirmDialog({ title: `${verb} ${label}`, body: mgrPlanHtml(plan), ok: verb, danger: action === "uninstall" }))) return;
+  const key = `mgr:${name}`;
+  S.jobs[key] = { mgr: name, title: `${verb} ${label}`, stage: "manager", via: label, command: plan.command_line || plan.summary };
+  render();
+  try {
+    const rep = await invoke("manager_execute", { name, action });
+    toast(`已${verb} ${label}`, rep.notices.join("；") || (rep.unregistered.length ? `已取消登记 ${rep.unregistered.length} 个运行时` : ""));
+  } catch (e) {
+    toast(`${verb} ${label} 失败`, String(e), "error");
+  } finally {
+    delete S.jobs[key];
+    await loadManagers();
+    load({ quiet: true });
+  }
+}
+
+async function managerInstallFromPage(name) {
+  let plan;
+  try { plan = await invoke("manager_install_plan", { name }); }
+  catch (e) { toast(`无法安装 ${name}`, String(e), "error"); return; }
+  const label = PROVIDERS[name] || name;
+  const body = `将执行以下命令（不会使用 sudo）：<br><code class="mono" style="display:block;white-space:pre-wrap;margin:8px 0">${esc(plan.display)}</code>
+    ${plan.rc_note ? `<b>会修改：</b>${esc(plan.rc_note)}` : "不会修改 shell 配置文件。"}${plan.note ? `<br><span class="muted">${esc(plan.note)}</span>` : ""}`;
+  if (!(await confirmDialog({ title: `安装 ${label}`, body, ok: "安装" }))) return;
+  const key = `mgr:${name}`;
+  S.jobs[key] = { mgr: name, title: `安装 ${label}`, stage: "manager", via: label, command: plan.display };
+  render();
+  try { await invoke("install_manager_only", { name }); toast(`${label} 已安装`, "现在可以在运行时页面选择通过它安装新版本"); }
+  catch (e) { toast(`安装 ${label} 失败`, String(e), "error"); }
+  finally { delete S.jobs[key]; S.installer = {}; await loadManagers(); }
+}
+
 function pageDetect() {
   const d = S.detected;
   let body;
@@ -670,12 +753,17 @@ function onProgress(p) {
     tmp.innerHTML = jobCard(p.tool);
     card.replaceWith(tmp.firstElementChild);
   } else if (route().name === "tool" && route().arg === p.tool) render();
+  else if (route().name === "managers" && p.tool.startsWith("mgr:")) render();
 }
 
 async function onAction(btn) {
   const { act, tool, v } = btn.dataset;
   switch (act) {
     case "reload": return load();
+    case "mgr-refresh": S.mgrs = null; return render();
+    case "mgr-upgrade": return managerAction(btn.dataset.name, "upgrade");
+    case "mgr-uninstall": return managerAction(btn.dataset.name, "uninstall");
+    case "mgr-install": return managerInstallFromPage(btn.dataset.name);
     case "install": return install(tool, v);
     case "install-query": { const q = (S.query[tool] || "").trim() || "latest"; return install(tool, q); }
     case "reload-remote": return loadRemote(tool, true);
