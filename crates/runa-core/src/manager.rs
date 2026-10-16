@@ -540,8 +540,7 @@ impl Manager {
                         InstalledVersion {
                             provider: r.as_ref().and_then(|r| r.provider.clone()).or_else(|| {
                                 adopted.then(|| {
-                                    crate::detect::classify(&platform::canonicalize(&home))
-                                    .0
+                                    crate::detect::classify(&platform::canonicalize(&home)).0
                                 })
                             }),
                             path: home,

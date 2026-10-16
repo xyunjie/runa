@@ -10,6 +10,7 @@ pub mod activate;
 pub mod archive;
 pub mod detect;
 pub mod installer;
+pub mod locations;
 pub mod manager;
 pub mod net;
 pub mod paths;

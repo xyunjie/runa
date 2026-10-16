@@ -15,6 +15,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::installer::{self, Receipt};
+use crate::locations::{self, Env, WELL_KNOWN};
 use crate::manager::Manager;
 use crate::platform;
 
@@ -70,60 +71,64 @@ fn candidate_dirs(m: &Manager, tool: &str) -> Vec<(PathBuf, String)> {
             if let Some(h) = env_root("JAVA_HOME") {
                 v.push((h.join("bin"), "JAVA_HOME".into()));
             }
-            let roots: &[&str] = if cfg!(target_os = "macos") {
-                &["/Library/Java/JavaVirtualMachines"]
-            } else if cfg!(windows) {
-                &[
-                    "C:\\Program Files\\Java",
-                    "C:\\Program Files\\Eclipse Adoptium",
-                    "C:\\Program Files\\Microsoft",
-                ]
-            } else {
-                &["/usr/lib/jvm"]
-            };
-            for r in roots {
-                if let Ok(rd) = std::fs::read_dir(r) {
-                    for e in rd.flatten() {
-                        let p = e.path();
-                        let home = if cfg!(target_os = "macos") {
-                            p.join("Contents").join("Home")
-                        } else {
-                            p
-                        };
-                        v.push((home.join("bin"), "常见目录".into()));
-                    }
-                }
-            }
         }
         "go" => {
             if let Some(h) = env_root("GOROOT") {
                 v.push((h.join("bin"), "GOROOT".into()));
             }
-            for r in ["/usr/local/go", "/usr/lib/go", "C:\\Program Files\\Go"] {
-                v.push((PathBuf::from(r).join("bin"), "常见目录".into()));
+        }
+        "python" if cfg!(windows) => {
+            // the py launcher knows every registered python.org / Store install
+            if let Some(out) = run_version(Path::new("py"), &["-0p"]) {
+                for p in locations::parse_py_launcher(&out) {
+                    if let Some(d) = p.parent() {
+                        v.push((d.to_path_buf(), "py".into()));
+                    }
+                }
             }
         }
         _ => {}
     }
-    if let Some(h) = dirs::home_dir() {
-        v.extend(store_bin_dirs(&h, tool, &brew_cellars()));
-    }
+    let env = Env::current();
+    v.extend(well_known_bin_dirs(&env, tool));
+    v.extend(store_bin_dirs(&env, tool, &env.brew_cellars()));
     v
 }
 
-fn brew_cellars() -> Vec<PathBuf> {
-    [
-        "/opt/homebrew/Cellar",
-        "/usr/local/Cellar",
-        "/home/linuxbrew/.linuxbrew/Cellar",
-    ]
-    .iter()
-    .map(PathBuf::from)
-    .collect()
+/// `<home>/bin` and, for layouts without a bin dir (Windows node / python), `<home>`.
+fn home_bin_dirs(home: PathBuf, label: &str, out: &mut Vec<(PathBuf, String)>) {
+    let bin = home.join("bin");
+    let has_bin = bin.is_dir();
+    out.push((bin, label.to_string()));
+    if !has_bin {
+        out.push((home, label.to_string()));
+    }
+}
+
+/// Vendor / OS default locations (Program Files, /usr/lib/jvm, /usr/local/go, ...).
+fn well_known_bin_dirs(env: &Env, tool: &str) -> Vec<(PathBuf, String)> {
+    let mut out = Vec::new();
+    for (root, suffix) in locations::vendor_roots(env, tool) {
+        for d in real_children(&root) {
+            home_bin_dirs(join_all(d, suffix), WELL_KNOWN, &mut out);
+        }
+    }
+    for h in locations::fixed_homes(env, tool) {
+        home_bin_dirs(h, WELL_KNOWN, &mut out);
+    }
+    out
+}
+
+fn join_all(mut p: PathBuf, segs: &[&str]) -> PathBuf {
+    for s in segs {
+        p = p.join(s);
+    }
+    p
 }
 
 /// Real (non-symlink, non-hidden) child directories. Symlinked aliases such as sdkman's
-/// `current` or nvm/pyenv aliases are skipped so each runtime is seen once.
+/// `current`, scoop's `current` junction or nvm/pyenv/mise aliases are skipped so each
+/// runtime is seen once.
 fn real_children(dir: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
         .into_iter()
@@ -141,61 +146,30 @@ fn real_children(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Version-manager stores: `(store dir, label, suffix from version dir to runtime home)`.
-fn store_roots(user_home: &Path, tool: &str) -> Vec<(PathBuf, &'static str, &'static str)> {
-    let h = user_home;
-    let fnm = [
-        h.join(".local/share/fnm/node-versions"),
-        h.join("Library/Application Support/fnm/node-versions"),
-    ];
-    match tool {
-        "node" => {
-            let mut v = vec![
-                (h.join(".nvm/versions/node"), "nvm", ""),
-                (h.join(".asdf/installs/nodejs"), "asdf", ""),
-            ];
-            v.extend(fnm.into_iter().map(|p| (p, "fnm", "installation")));
-            v
-        }
-        "python" => vec![
-            (h.join(".pyenv/versions"), "pyenv", ""),
-            (h.join(".asdf/installs/python"), "asdf", ""),
-        ],
-        "java" => vec![
-            (h.join(".sdkman/candidates/java"), "sdkman", ""),
-            (h.join(".asdf/installs/java"), "asdf", ""),
-            (
-                h.join("Library/Java/JavaVirtualMachines"),
-                "常见目录",
-                "Contents/Home",
-            ),
-        ],
-        "go" => vec![
-            (h.join(".sdkman/candidates/go"), "sdkman", ""),
-            (h.join(".asdf/installs/golang"), "asdf", "go"),
-        ],
-        _ => vec![],
-    }
-}
-
 /// Homebrew formulae providing `tool` (with the suffix from keg to runtime home).
-fn brew_formula_matches(tool: &str, formula: &str) -> Option<&'static str> {
+fn brew_formula_matches(tool: &str, formula: &str) -> Option<&'static [&'static str]> {
     let ok = |base: &str| formula == base || formula.starts_with(&format!("{base}@"));
     match tool {
-        "node" if ok("node") => Some(""),
-        "python" if formula.starts_with("python@") => Some(""),
-        "java" if ok("openjdk") => Some("libexec/openjdk.jdk/Contents/Home"),
-        "go" if ok("go") => Some(""),
+        "node" if ok("node") => Some(&[]),
+        "python" if formula.starts_with("python@") => Some(&[]),
+        "java" if ok("openjdk") => Some(&["libexec", "openjdk.jdk", "Contents", "Home"]),
+        "go" if ok("go") => Some(&[]),
         _ => None,
     }
 }
 
 /// Directories whose contents decide what detection finds for `tool` (fingerprint input).
-fn store_scan_dirs(user_home: &Path, tool: &str, cellars: &[PathBuf]) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = store_roots(user_home, tool)
+fn store_scan_dirs(env: &Env, tool: &str, cellars: &[PathBuf]) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = locations::stores(env, tool)
         .into_iter()
-        .map(|(p, _, _)| p)
+        .map(|s| s.dir)
         .collect();
+    v.extend(
+        locations::vendor_roots(env, tool)
+            .into_iter()
+            .map(|(d, _)| d),
+    );
+    v.extend(locations::fixed_homes(env, tool));
     for c in cellars {
         v.push(c.clone());
         for f in real_children(c) {
@@ -213,12 +187,19 @@ fn store_scan_dirs(user_home: &Path, tool: &str, cellars: &[PathBuf]) -> Vec<Pat
 }
 
 /// Candidate bin dirs inside version-manager stores and Homebrew kegs.
-fn store_bin_dirs(user_home: &Path, tool: &str, cellars: &[PathBuf]) -> Vec<(PathBuf, String)> {
+fn store_bin_dirs(env: &Env, tool: &str, cellars: &[PathBuf]) -> Vec<(PathBuf, String)> {
     let mut out = Vec::new();
-    for (root, label, suffix) in store_roots(user_home, tool) {
-        for d in real_children(&root) {
-            let home = if suffix.is_empty() { d } else { d.join(suffix) };
-            out.push((home.join("bin"), label.to_string()));
+    for st in locations::stores(env, tool) {
+        for d in real_children(&st.dir) {
+            let name = d
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            if !st.filter.accepts(&name) {
+                continue;
+            }
+            home_bin_dirs(join_all(d, st.suffix), st.label, &mut out);
         }
     }
     for c in cellars {
@@ -232,12 +213,7 @@ fn store_bin_dirs(user_home: &Path, tool: &str, cellars: &[PathBuf]) -> Vec<(Pat
                 continue;
             };
             for keg in real_children(&f) {
-                let home = if suffix.is_empty() {
-                    keg
-                } else {
-                    keg.join(suffix)
-                };
-                out.push((home.join("bin"), "homebrew".to_string()));
+                out.push((join_all(keg, suffix).join("bin"), "homebrew".to_string()));
             }
         }
     }
@@ -246,38 +222,14 @@ fn store_bin_dirs(user_home: &Path, tool: &str, cellars: &[PathBuf]) -> Vec<(Pat
 
 /// Classify who owns a runtime home: `(provider, homebrew formula)`.
 ///
-/// `homebrew` (inside a Cellar), `nvm`, `pyenv`, `sdkman`, `asdf`, `fnm`, `system`
-/// (/usr, /System, Xcode / CommandLineTools) or `manual` (any other plain directory).
+/// See [`locations::owner`] for the providers on each platform: version managers
+/// (`homebrew`, `nvm`, `nvm-windows`, `pyenv`, `pyenv-win`, `sdkman`, `asdf`, `fnm`,
+/// `mise`, `scoop`, `winget`, `chocolatey`), `installer` (Windows MSI / vendor setup),
+/// `system` (OS owned) or `manual` (any other plain directory).
 pub fn classify(home: &Path) -> (String, Option<String>) {
-    let s = home.to_string_lossy().replace('\\', "/");
-    let comps: Vec<&str> = s.split('/').collect();
-    if let Some(i) = comps.iter().position(|c| *c == "Cellar") {
-        if let Some(f) = comps.get(i + 1).filter(|f| !f.is_empty()) {
-            return ("homebrew".into(), Some(f.to_string()));
-        }
-    }
-    let has = |m: &str| s.contains(m);
-    let p = if has("/.nvm/versions/node/") {
-        "nvm"
-    } else if has("/.pyenv/versions/") {
-        "pyenv"
-    } else if has("/.sdkman/candidates/") {
-        "sdkman"
-    } else if has("/.asdf/installs/") {
-        "asdf"
-    } else if has("/fnm/node-versions/") {
-        "fnm"
-    } else if s == "/usr"
-        || (s.starts_with("/usr/") && !s.starts_with("/usr/local/"))
-        || s.starts_with("/System/")
-        || s.starts_with("/Library/Developer/CommandLineTools")
-        || (s.starts_with("/Applications/Xcode") && s.contains(".app/"))
-    {
-        "system"
-    } else {
-        "manual"
-    };
-    (p.into(), None)
+    let o = locations::owner(home, &Env::current());
+    let formula = (o.provider == "homebrew").then_some(o.package).flatten();
+    (o.provider, formula)
 }
 
 /// Path segments after `marker` (e.g. `/.nvm/versions/node/` -> `["v20.1.0", "bin"]`).
@@ -330,8 +282,8 @@ fn scan(m: &Manager) -> Vec<Detected> {
                 let Some(p) = crate::manager::find_exe_in(std::slice::from_ref(&dir), exe) else {
                     continue;
                 };
-                let real = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
-                if seen.contains(&real) || m.paths.contains(&real) {
+                let real = platform::canonicalize(&p);
+                if seen.iter().any(|s| platform::same_path(s, &real)) || m.paths.contains(&real) {
                     continue;
                 }
                 seen.push(real.clone());
@@ -341,20 +293,23 @@ fn scan(m: &Manager) -> Vec<Detected> {
                 let Some(version) = plugin.parse_version_output(&out) else {
                     continue;
                 };
+                // The first working hit on PATH is the machine's global version, even when
+                // it cannot be adopted (e.g. a distro runtime living directly in /usr).
+                let first_on_path = !default_taken && via == "PATH";
+                default_taken |= via == "PATH";
                 // Ask the runtime where it really lives. This sees through launcher stubs
                 // (macOS /usr/bin/java, /usr/bin/python3) and version-manager shims
                 // (pyenv, asdf, ...) whose own location says nothing about the runtime.
                 let Some(home) = query_home(&tool, &p).or_else(|| guess_home(&real, exe)) else {
                     continue;
                 };
-                if homes.contains(&home) || m.paths.contains(&home) {
+                if homes.iter().any(|h| platform::same_path(h, &home)) || m.paths.contains(&home) {
                     continue;
                 }
                 homes.push(home.clone());
                 let bin_dir = real_bin_dir(&home, exe).unwrap_or_else(|| dir.clone());
                 let (provider, formula) = classify(&home);
-                let system_default = !default_taken && via == "PATH";
-                default_taken |= system_default;
+                let system_default = first_on_path;
                 found.push(Detected {
                     tool: tool.clone(),
                     version,
@@ -404,27 +359,43 @@ pub(crate) fn query_home(tool: &str, exe: &Path) -> Option<PathBuf> {
     let mut p = PathBuf::from(line);
     if tool == "java" && p.ends_with("jre") {
         // Java 8 reports <jdk>/jre; the JDK root is one level up
-        if let Some(parent) = p.parent().filter(|d| d.join("bin").join("java").exists()) {
+        if let Some(parent) = p.parent().filter(|d| real_bin_dir(d, "java").is_some()) {
             p = parent.to_path_buf();
         }
     }
     if tool == "node" {
-        // execPath is the binary: <root>/bin/node
-        p = std::fs::canonicalize(&p)
-            .ok()?
-            .parent()?
-            .parent()?
-            .to_path_buf();
+        // execPath is the binary: <root>/bin/node (unix) or <root>\node.exe (Windows)
+        let exe = platform::canonicalize(&p);
+        let dir = exe.parent()?;
+        p = if dir
+            .file_name()
+            .is_some_and(|n| n.eq_ignore_ascii_case("bin"))
+        {
+            dir.parent()?.to_path_buf()
+        } else {
+            dir.to_path_buf()
+        };
     }
-    let p = std::fs::canonicalize(&p).unwrap_or(p);
-    p.is_dir().then_some(p)
+    let p = platform::canonicalize(&p);
+    (p.is_dir() && !is_system_prefix(&p) && !locations::is_shim_dir(&p)).then_some(p)
 }
 
-/// Fallback: `<root>/bin/<exe>`, accepted only when that layout really exists, so a
-/// stub such as /usr/bin/java never turns /usr into a "JDK".
+/// Fallback: `<root>/bin/<exe>` (or `<root>\<exe>.exe` on Windows), accepted only when
+/// that layout really exists, so a stub such as /usr/bin/java never turns /usr into a
+/// "JDK" and a shim dir is never taken for a runtime.
 pub(crate) fn guess_home(real: &Path, exe: &str) -> Option<PathBuf> {
-    let home = real.parent()?.parent()?.to_path_buf();
-    if is_system_prefix(&home) {
+    let dir = real.parent()?;
+    let home = if dir
+        .file_name()
+        .is_some_and(|n| n.eq_ignore_ascii_case("bin"))
+    {
+        dir.parent()?.to_path_buf()
+    } else if cfg!(windows) {
+        dir.to_path_buf()
+    } else {
+        return None;
+    };
+    if is_system_prefix(&home) || locations::is_shim_dir(&home) || locations::is_shim_dir(dir) {
         return None;
     }
     real_bin_dir(&home, exe).map(|_| home)
@@ -436,12 +407,10 @@ pub(crate) fn real_bin_dir(home: &Path, exe: &str) -> Option<PathBuf> {
         .find(|d| crate::manager::find_exe_in(std::slice::from_ref(d), exe).is_some())
 }
 
-/// Shared system prefixes are never a runtime root by themselves.
+/// Shared system prefixes are never a runtime root by themselves (macOS, Linux and
+/// Windows, see [`locations::is_system_prefix`]).
 pub(crate) fn is_system_prefix(p: &Path) -> bool {
-    matches!(
-        p.to_str(),
-        Some("/" | "/usr" | "/usr/local" | "/opt/homebrew" | "/opt/local")
-    )
+    locations::is_system_prefix(p, &Env::current())
 }
 
 // ------------------------------------------------------------------ cache
@@ -456,6 +425,9 @@ pub struct Fingerprint {
     pub path: String,
     pub java_home: String,
     pub goroot: String,
+    /// Version-manager location overrides (NVM_DIR, FNM_DIR, SCOOP, ...).
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
     /// `(dir, mtime secs)`; 0 when the directory does not exist.
     pub dirs: Vec<(PathBuf, u64)>,
 }
@@ -501,22 +473,11 @@ fn mtime(p: &Path) -> u64 {
 pub fn fingerprint(m: &Manager) -> Fingerprint {
     let var = |k: &str| std::env::var(k).unwrap_or_default();
     let mut dirs: Vec<PathBuf> = m.system_path();
-    let cellars = brew_cellars();
+    let env = Env::current();
+    let cellars = env.brew_cellars();
     for tool in ["node", "python", "java", "go"] {
-        if let Some(h) = dirs::home_dir() {
-            dirs.extend(store_scan_dirs(&h, tool, &cellars));
-        }
+        dirs.extend(store_scan_dirs(&env, tool, &cellars));
     }
-    dirs.extend(
-        [
-            "/Library/Java/JavaVirtualMachines",
-            "/usr/lib/jvm",
-            "/usr/local/go",
-            "/usr/lib/go",
-        ]
-        .iter()
-        .map(PathBuf::from),
-    );
     let mut seen = std::collections::BTreeSet::new();
     let dirs = dirs
         .into_iter()
@@ -530,6 +491,11 @@ pub fn fingerprint(m: &Manager) -> Fingerprint {
         path: std::env::var("RUNA_PATH_BASE").unwrap_or_else(|_| var("PATH")),
         java_home: var("JAVA_HOME"),
         goroot: var("GOROOT"),
+        env: env
+            .vars
+            .iter()
+            .map(|(k, v)| (k.clone(), v.display().to_string()))
+            .collect(),
         dirs,
     }
 }
@@ -598,7 +564,8 @@ fn report(
 
 /// Fill `adopted` / `adopted_as` / `disabled` from the current receipts.
 pub fn annotate(m: &Manager, items: &mut [Detected]) {
-    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let canon = |p: &Path| platform::canonicalize(p);
+    let same = platform::same_path;
     for d in items.iter_mut() {
         d.adopted = false;
         d.adopted_as = None;
@@ -615,10 +582,12 @@ pub fn annotate(m: &Manager, items: &mut [Detected]) {
             let hit = r
                 .home
                 .as_deref()
-                .map(|h| canon(h) == d.home)
+                .map(|h| same(&canon(h), &d.home))
                 .unwrap_or(false)
                 || r.origin.as_deref().is_some_and(|o| {
-                    canon(o) == d.home || o == d.found_in || Some(o) == path_dir.as_deref()
+                    same(&canon(o), &d.home)
+                        || same(o, &d.found_in)
+                        || path_dir.as_deref().is_some_and(|p| same(o, p))
                 });
             if hit {
                 d.adopted = true;
@@ -649,11 +618,16 @@ pub fn adopt(m: &Manager, d: &Detected, name: Option<&str>) -> Result<String> {
             version
         );
     }
-    let home = std::fs::canonicalize(&d.home)
-        .with_context(|| format!("安装目录不存在: {}", d.home.display()))?;
+    if !d.home.is_dir() {
+        bail!("安装目录不存在: {}", d.home.display());
+    }
+    let home = platform::canonicalize(&d.home);
+    if is_system_prefix(&home) {
+        bail!("{} 是系统共享目录，不能作为运行时接管", home.display());
+    }
     for v in m.installed(&d.tool) {
         if let Some(h) = m.receipt(&d.tool, &v).and_then(|r| r.home) {
-            if std::fs::canonicalize(&h).unwrap_or(h) == home {
+            if platform::same_path(&platform::canonicalize(&h), &home) {
                 bail!("{} 已被接管为 {} {v}", home.display(), d.tool);
             }
         }
@@ -662,7 +636,7 @@ pub fn adopt(m: &Manager, d: &Detected, name: Option<&str>) -> Result<String> {
         .exe
         .file_name()
         .and_then(|s| s.to_str())
-        .map(|s| s.trim_end_matches(".exe").to_string())
+        .map(platform::bare_name)
         .unwrap_or_else(|| d.tool.clone());
     let bin = real_bin_dir(&home, &exe_name)
         .ok_or_else(|| anyhow!("在 {} 中找不到 {exe_name}", home.display()))?;
@@ -812,7 +786,7 @@ pub(crate) fn resolve_legacy(
         let Some(p) = legacy_exe(&dir, r.origin.as_deref(), r.home.as_deref(), exe, plugin) else {
             continue;
         };
-        let real = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+        let real = platform::canonicalize(&p);
         if let Some(home) = query_home(&tool, &p).or_else(|| guess_home(&real, exe)) {
             if let Some(bin) = real_bin_dir(&home, exe) {
                 return Some((home, bin));
@@ -1045,36 +1019,106 @@ mod tests {
     fn store_scan_skips_symlinked_aliases() {
         let t = tempfile::tempdir().unwrap();
         let h = t.path();
-        let cand = h.join(".sdkman/candidates/java");
-        std::fs::create_dir_all(cand.join("21.0.2-tem/bin")).unwrap();
-        std::fs::create_dir_all(cand.join("17.0.9-tem/bin")).unwrap();
+        let env = Env {
+            home: h.to_path_buf(),
+            ..Default::default()
+        };
+        let j = |p: &Path, segs: &[&str]| join_all(p.to_path_buf(), segs);
+        let cand = j(h, &[".sdkman", "candidates", "java"]);
+        std::fs::create_dir_all(j(&cand, &["21.0.2-tem", "bin"])).unwrap();
+        std::fs::create_dir_all(j(&cand, &["17.0.9-tem", "bin"])).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(cand.join("21.0.2-tem"), cand.join("current")).unwrap();
         let cellar = h.join("Cellar");
-        std::fs::create_dir_all(
-            cellar.join("openjdk@17/17.0.9/libexec/openjdk.jdk/Contents/Home/bin"),
-        )
+        let jdk = &[
+            "openjdk@17",
+            "17.0.9",
+            "libexec",
+            "openjdk.jdk",
+            "Contents",
+            "Home",
+        ];
+        std::fs::create_dir_all(j(&cellar, jdk).join("bin")).unwrap();
+        std::fs::create_dir_all(j(&cellar, &["wget", "1.0", "bin"])).unwrap();
+        std::fs::create_dir_all(j(
+            h,
+            &[
+                "Library",
+                "Application Support",
+                "fnm",
+                "node-versions",
+                "v22.1.0",
+                "installation",
+                "bin",
+            ],
+        ))
         .unwrap();
-        std::fs::create_dir_all(cellar.join("wget/1.0/bin")).unwrap();
-        std::fs::create_dir_all(
-            h.join("Library/Application Support/fnm/node-versions/v22.1.0/installation/bin"),
-        )
-        .unwrap();
-        let dirs: Vec<PathBuf> = store_bin_dirs(h, "java", std::slice::from_ref(&cellar))
+        let dirs: Vec<PathBuf> = store_bin_dirs(&env, "java", std::slice::from_ref(&cellar))
             .into_iter()
             .map(|(d, _)| d)
             .collect();
-        assert!(dirs.contains(&cand.join("21.0.2-tem/bin")));
-        assert!(dirs.contains(&cand.join("17.0.9-tem/bin")));
+        assert!(dirs.contains(&j(&cand, &["21.0.2-tem", "bin"])));
+        assert!(dirs.contains(&j(&cand, &["17.0.9-tem", "bin"])));
         assert!(!dirs.iter().any(|d| d.starts_with(cand.join("current"))));
-        assert!(
-            dirs.contains(&cellar.join("openjdk@17/17.0.9/libexec/openjdk.jdk/Contents/Home/bin"))
-        );
+        assert!(dirs.contains(&j(&cellar, jdk).join("bin")));
         assert!(!dirs.iter().any(|d| d.starts_with(cellar.join("wget"))));
-        let node: Vec<_> = store_bin_dirs(h, "node", &[]).into_iter().collect();
-        assert!(node
+        let node: Vec<_> = store_bin_dirs(&env, "node", &[]).into_iter().collect();
+        assert!(node.iter().any(|(d, via)| via == "fnm"
+            && d.ends_with(j(Path::new("v22.1.0"), &["installation", "bin"]))));
+    }
+
+    /// Windows layouts (node.exe / python.exe directly in the home, no bin dir) found in
+    /// fake nvm-windows, scoop, pyenv-win and Program Files trees on any host.
+    #[test]
+    fn windows_style_stores_yield_home_dirs() {
+        let t = tempfile::tempdir().unwrap();
+        let h = t.path();
+        let env = Env {
+            home: h.to_path_buf(),
+            appdata: Some(h.join("AppData").join("Roaming")),
+            program_files: vec![h.join("Program Files")],
+            ..Default::default()
+        };
+        let nvm = h.join("AppData").join("Roaming").join("nvm");
+        std::fs::create_dir_all(nvm.join("v20.11.1")).unwrap();
+        std::fs::create_dir_all(nvm.join("nodejs-cache")).unwrap(); // not a version
+        let scoop = h.join("scoop").join("apps").join("nodejs").join("21.6.0");
+        std::fs::create_dir_all(&scoop).unwrap();
+        let pyw = h
+            .join(".pyenv")
+            .join("pyenv-win")
+            .join("versions")
+            .join("3.12.1");
+        std::fs::create_dir_all(&pyw).unwrap();
+        let tem = h
+            .join("Program Files")
+            .join("Eclipse Adoptium")
+            .join("jdk-21");
+        std::fs::create_dir_all(tem.join("bin")).unwrap();
+        let go = h.join("Program Files").join("Go");
+        std::fs::create_dir_all(go.join("bin")).unwrap();
+        let node: Vec<_> = store_bin_dirs(&env, "node", &[]);
+        assert!(node.contains(&(nvm.join("v20.11.1"), "nvm-windows".into())));
+        assert!(!node
             .iter()
-            .any(|(d, via)| via == "fnm" && d.ends_with("v22.1.0/installation/bin")));
+            .any(|(d, _)| d.starts_with(nvm.join("nodejs-cache"))));
+        assert!(node.contains(&(scoop.clone(), "scoop".into())));
+        let py = store_bin_dirs(&env, "python", &[]);
+        assert!(py.contains(&(pyw.clone(), "pyenv-win".into())));
+        let java = well_known_bin_dirs(&env, "java");
+        assert!(java.contains(&(tem.join("bin"), WELL_KNOWN.into())));
+        let gos = well_known_bin_dirs(&env, "go");
+        assert!(gos.contains(&(go.join("bin"), WELL_KNOWN.into())));
+        assert!(
+            !gos.contains(&(go.clone(), WELL_KNOWN.into())),
+            "has bin, home not scanned"
+        );
+        let o = locations::owner(&nvm.join("v20.11.1"), &env);
+        assert_eq!(o.provider, "nvm-windows");
+        assert_eq!(
+            locations::owner(&scoop, &env).package.as_deref(),
+            Some("nodejs")
+        );
     }
 
     #[test]
@@ -1083,6 +1127,7 @@ mod tests {
             path: "/a:/b".into(),
             java_home: String::new(),
             goroot: String::new(),
+            env: vec![],
             dirs: vec![(PathBuf::from("/a"), 10)],
         };
         let c = DetectCache {
@@ -1134,7 +1179,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let m = mgr(t.path());
         let home = t.path().join("rt").join("node-v20.1.0");
-        exe(&home.join("bin/node"), "#!/bin/sh\necho v20.1.0\n");
+        exe(&home.join("bin").join("node"), "#!/bin/sh\necho v20.1.0\n");
         let home = std::fs::canonicalize(&home).unwrap();
         let d = Detected {
             tool: "node".into(),
