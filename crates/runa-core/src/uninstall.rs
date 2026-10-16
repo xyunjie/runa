@@ -111,18 +111,25 @@ pub fn removal_root(home: &Path) -> PathBuf {
     home.to_path_buf()
 }
 
+/// Whether the current user can delete entries in `dir`, decided from metadata only so
+/// planning (and `--dry-run`) never writes anything. Unix: owner == the user's home dir
+/// owner with u+w, or world-writable without the sticky bit.
 fn writable(dir: &Path) -> bool {
-    let probe = dir.join(format!(".runa-write-probe-{}", std::process::id()));
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&probe)
+    let Ok(md) = std::fs::metadata(dir) else {
+        return false;
+    };
+    #[cfg(unix)]
     {
-        Ok(_) => {
-            let _ = std::fs::remove_file(&probe);
-            true
-        }
-        Err(_) => false,
+        use std::os::unix::fs::MetadataExt;
+        let me = dirs::home_dir()
+            .and_then(|h| std::fs::metadata(h).ok())
+            .map(|m| m.uid());
+        let mode = md.mode();
+        (Some(md.uid()) == me && mode & 0o200 != 0) || (mode & 0o002 != 0 && mode & 0o1000 == 0)
+    }
+    #[cfg(not(unix))]
+    {
+        !md.permissions().readonly()
     }
 }
 
