@@ -402,7 +402,7 @@ mod tests {
         let found = find_with_boundary(&sub, None).unwrap().unwrap();
         assert_eq!(
             found.root.unwrap(),
-            std::fs::canonicalize(t.path()).unwrap()
+            dunce(std::fs::canonicalize(t.path()).unwrap())
         );
     }
 
