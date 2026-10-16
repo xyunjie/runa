@@ -159,7 +159,13 @@ cargo test -p runa-core -p runa-cli      # 单元测试
 
 ### 桌面端
 
-前端是零依赖的原生 HTML / CSS / JS（`gui/ui/`），不需要 Node.js。
+前端位于 `gui/web/`：React 18 + Vite + TypeScript + Tailwind CSS + shadcn/ui（Radix）。编译桌面端前需要 Node.js 20.19+ 构建一次前端，产物 `gui/web/dist` 会在 `cargo build` 时嵌入二进制：
+
+```bash
+cd gui/web && npm ci && npm run build && cd ../..   # tsc 类型检查 + vite 构建
+```
+
+**开发模式**（热更新）：`cargo install tauri-cli --version "^2" --locked` 后在 `gui/` 中执行 `cargo tauri dev`，它会自动运行 `npm run dev`（Vite，http://localhost:5173）并让窗口加载开发服务器。只调界面时也可以直接 `cd gui/web && npm run dev` 用浏览器打开，此时 IPC 使用模拟数据。
 
 **Linux（Debian / Ubuntu）**
 
@@ -183,7 +189,7 @@ cd gui && cargo tauri build
 
 ### 界面预览与截图
 
-`gui/preview/mock.js` 提供了模拟数据，可以在浏览器中预览界面而不启动 Tauri：
+在浏览器（而不是 Tauri）中打开时，前端自动使用 `gui/web/src/lib/mock.ts` 的模拟数据，可以预览界面而不启动 Tauri：
 
 ```bash
 scripts/ui-screens.sh docs/screens     # 需要 Chrome / Chromium，生成浅色与深色截图
@@ -195,8 +201,7 @@ scripts/ui-screens.sh docs/screens     # 需要 Chrome / Chromium，生成浅色
 crates/runa-core   核心库：解析、安装、激活、检测、镜像代理、插件
 crates/runa-cli    命令行（二进制名 runa）
 gui/src-tauri      Tauri v2 桌面端（Rust 部分）
-gui/ui             桌面端前端（原生 HTML/CSS/JS，无构建步骤）
-gui/preview        浏览器预览用的 IPC 模拟
+gui/web            桌面端前端（React + Vite + TypeScript + Tailwind + shadcn/ui；src/lib/api.ts 为类型化的 IPC 接口）
 examples/plugins   JSON 插件示例
 .github/workflows  CI 与发布流程
 ```
