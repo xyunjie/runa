@@ -35,7 +35,8 @@ fn providers_of(manager: &str) -> &'static [&'static str] {
 /// Package ids per install origin.
 fn package_id(manager: &str, origin: &str) -> Option<&'static str> {
     Some(match (manager, origin) {
-        ("fnm" | "pyenv" | "asdf" | "mise", "brew") => match manager {
+        ("nvm" | "fnm" | "pyenv" | "asdf" | "mise", "brew") => match manager {
+            "nvm" => "nvm",
             "fnm" => "fnm",
             "pyenv" => "pyenv",
             "asdf" => "asdf",
