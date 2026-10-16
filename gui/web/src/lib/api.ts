@@ -215,6 +215,7 @@ export const api = {
   projectRemove: (path: string) => call<string[]>("project_remove", { path }),
   projectDetail: (path: string) => call<ProjectDetail>("project_detail", { path }),
   projectSetVersion: (path: string, tool: string, version: string) => call<string>("project_set_version", { path, tool, version }),
+  projectIsProject: (path: string) => call<boolean>("project_is_project", { path }),
   projectScan: (root: string) => call<string[]>("project_scan", { root }),
   mcpStatus: () => call<McpStatus>("mcp_status"),
   mcpSetPolicy: (policy: McpPolicy) => call<McpPolicy>("mcp_set_policy", { policy }),

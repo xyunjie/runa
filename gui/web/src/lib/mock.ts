@@ -171,6 +171,7 @@ const handlers: Record<string, (a: any) => Promise<unknown>> = {
     { tool: "go", required: "1.27", source: `${path}/go.mod`, file: `${path}/go.mod`, status: "missing", resolved: null, installed: [] },
   ] }),
   project_set_version: async ({ path }) => `${path}/.tool-versions`,
+  project_is_project: async ({ path }) => !String(path).endsWith("/code"),
   project_scan: async ({ root }) => [`${root}/web-app`, `${root}/api`],
   mcp_set_policy: async ({ policy }) => { mcpPolicy = policy; return policy; },
   mcp_add: async () => "已添加",

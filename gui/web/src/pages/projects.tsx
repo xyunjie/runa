@@ -3,6 +3,7 @@ import { AlertTriangle, Check, Download, FolderGit2, FolderOpen, FolderPlus, Ref
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { List, Row } from "@/components/ui/card";
 import { Callout, EmptyState, Mark, Page, PageHead } from "@/components/common";
@@ -26,6 +27,60 @@ export async function addProjects(paths: string[], go = true) {
     const target = added[0] || list.find((p) => paths.includes(p));
     if (go && target) location.hash = `#/project/${encodeURIComponent(target)}`;
   } catch (e) { notify("添加项目失败", String(e), "error"); }
+}
+
+/** Added folders that are not projects themselves but contain sub-projects open a picker. */
+export async function addFolders(paths: string[], go = true) {
+  const direct: string[] = [];
+  for (const p of paths) {
+    let isProj = true;
+    try { isProj = await api.projectIsProject(p); } catch { /* treat as project */ }
+    if (isProj) { direct.push(p); continue; }
+    let found: string[] = [];
+    try { found = (await api.projectScan(p)) || []; } catch { /* ignore */ }
+    if (found.length) setState({ subPick: { root: p, found } });
+    else direct.push(p);
+  }
+  if (direct.length) await addProjects(direct, go && !getState().subPick);
+}
+
+function SubProjectPicker() {
+  const pick = useStore((s) => s.subPick);
+  const projects = useStore((s) => s.projects);
+  const sp = useShortPath();
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  useEffect(() => { setSel(new Set(pick?.found || [])); }, [pick]);
+  if (!pick) return null;
+  const close = () => setState({ subPick: null });
+  const rel = (f: string) => f.startsWith(pick.root) ? f.slice(pick.root.length).replace(/^[\\/]/, "") || f : f;
+  const toggle = (f: string) => setSel((s) => { const n = new Set(s); n.has(f) ? n.delete(f) : n.add(f); return n; });
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) close(); }}>
+      <DialogContent wide>
+        <DialogTitle>发现 {pick.found.length} 个子项目</DialogTitle>
+        <DialogDescription>{sp(pick.root)} 本身不是项目，但其中包含以下项目。选择要添加的项目（多模块 Maven / Gradle 工程按一个项目添加）。</DialogDescription>
+        <div className="mt-3 flex items-center gap-2 text-sm text-fg-2">
+          <button className="underline" onClick={() => setSel(new Set(pick.found))}>全选</button>
+          <button className="underline" onClick={() => setSel(new Set())}>全不选</button>
+          <span className="ml-auto">已选 {sel.size} 个</span>
+        </div>
+        <div className="mt-2 max-h-[320px] overflow-y-auto rounded-lg border border-border">
+          {pick.found.map((f) => (
+            <label key={f} className="flex cursor-pointer items-center gap-2 border-b border-border px-3 py-2 text-sm last:border-b-0" title={f}>
+              <input type="checkbox" checked={sel.has(f)} onChange={() => toggle(f)} />
+              <span className="min-w-0 truncate">{rel(f)}</span>
+              {projects.includes(f) && <Badge>已添加</Badge>}
+            </label>
+          ))}
+        </div>
+        <DialogFooter>
+          <Button size="sm" onClick={() => { const r = pick.root; close(); addProjects([r]); }}>仅添加此文件夹</Button>
+          <Button size="sm" onClick={close}>取消</Button>
+          <Button size="sm" variant="primary" disabled={!sel.size} onClick={() => { const l = pick.found.filter((f) => sel.has(f)); close(); addProjects(l, false); }}>添加选中的 {sel.size} 个项目</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 async function pickFolder(multiple = true): Promise<string[]> {
@@ -55,7 +110,7 @@ export function ProjectsPage() {
   const sp = useShortPath();
   const [scan, setScan] = useState<{ root: string; found: string[] } | null>(null);
   const [scanning, setScanning] = useState(false);
-  const over = useDrop((p) => addProjects(p));
+  const over = useDrop((p) => addFolders(p));
   const doScan = async () => {
     const [root] = await pickFolder(false);
     if (!root) return;
@@ -69,10 +124,11 @@ export function ProjectsPage() {
   };
   return (
     <Page>
+      <SubProjectPicker />
       <PageHead title="项目" sub="按项目中的版本文件自动切换运行时版本；在这里查看并补齐每个项目需要的版本。">
         <div className="flex flex-wrap gap-2">
           <Button size="sm" disabled={scanning} onClick={doScan}><ScanSearch size={13} />{scanning ? "扫描中…" : "扫描文件夹"}</Button>
-          <Button size="sm" variant="primary" onClick={async () => addProjects(await pickFolder())}><FolderPlus size={13} />添加项目</Button>
+          <Button size="sm" variant="primary" onClick={async () => addFolders(await pickFolder())}><FolderPlus size={13} />添加项目</Button>
         </div>
       </PageHead>
       <div className={"mb-6 rounded-xl border border-dashed px-4 py-6 text-center text-sm transition-colors " + (over ? "border-accent bg-accent-soft text-fg" : "border-border text-fg-3")}>

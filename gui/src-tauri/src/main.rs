@@ -4,7 +4,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use runa_core::activate;
@@ -1008,23 +1008,62 @@ async fn project_set_version(path: String, tool: String, version: String) -> Cmd
     .await
 }
 
-/// Folders under `root` (depth <= 3) that declare runtime versions.
+/// Files that mark a folder as a project root.
+const PROJECT_MARKERS: &[&str] = &[
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "settings.gradle",
+    "settings.gradle.kts",
+    "package.json",
+    "go.mod",
+    "pyproject.toml",
+    "requirements.txt",
+    "setup.py",
+    "Pipfile",
+    "Cargo.toml",
+    "Gemfile",
+    "deno.json",
+    "deno.jsonc",
+    ".tool-versions",
+    ".nvmrc",
+    ".node-version",
+    ".python-version",
+    ".java-version",
+    ".sdkmanrc",
+    ".ruby-version",
+    ".go-version",
+    ".bun-version",
+    ".dvmrc",
+    ".deno-version",
+    "rust-toolchain",
+    "rust-toolchain.toml",
+];
+
+fn is_project_dir(dir: &Path) -> bool {
+    PROJECT_MARKERS.iter().any(|m| dir.join(m).is_file())
+}
+
+/// Whether `path` itself looks like a project (has a marker file).
+#[tauri::command]
+fn project_is_project(path: String) -> bool {
+    is_project_dir(Path::new(&path))
+}
+
+/// Project roots under `root` (depth <= 3). A project's own subfolders (Maven/Gradle
+/// modules, packages) are not descended into, so a multi-module build is one project.
 #[tauri::command]
 async fn project_scan(root: String) -> CmdResult<Vec<String>> {
     blocking(move || {
-        let m = manager()?;
-        let tools = m.registry.names();
         let mut out = Vec::new();
         let mut stack = vec![(PathBuf::from(&root), 0usize)];
         while let Some((dir, depth)) = stack.pop() {
             if out.len() >= 200 {
                 break;
             }
-            if tools
-                .iter()
-                .any(|t| runa_core::resolver::spec_in_dir(t, &dir).is_some())
-            {
+            if is_project_dir(&dir) {
                 out.push(dir.display().to_string());
+                continue;
             }
             if depth >= 3 {
                 continue;
@@ -1043,6 +1082,8 @@ async fn project_scan(root: String) -> CmdResult<Vec<String>> {
                             | "dist"
                             | "build"
                             | "venv"
+                            | "__pycache__"
+                            | "out"
                             | "Library"
                     );
                 if !skip && e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
@@ -1102,7 +1143,8 @@ fn main() {
             project_remove,
             project_detail,
             project_set_version,
-            project_scan
+            project_scan,
+            project_is_project
         ])
         .setup(|app| {
             let state = Arc::new(McpState::default());

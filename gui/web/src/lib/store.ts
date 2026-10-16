@@ -39,6 +39,7 @@ export interface State {
   detected: { status: "idle" | "loading" | "ok" | "error"; items: Detected[]; error: string | null; createdAt: number; refreshing: boolean };
   migration: MigrationAction[];
   projects: string[];
+  subPick: { root: string; found: string[] } | null;
 }
 
 let state: State = {
@@ -47,6 +48,7 @@ let state: State = {
   detected: { status: "idle", items: [], error: null, createdAt: 0, refreshing: false },
   migration: [],
   projects: [],
+  subPick: null,
 };
 const subs = new Set<() => void>();
 
