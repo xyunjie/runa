@@ -36,7 +36,12 @@ fn adopted_uninstall_requires_choice_and_dry_run_changes_nothing() {
     );
     assert!(o.status.success());
     let out = String::from_utf8_lossy(&o.stdout);
-    assert!(out.contains("rm -rf"), "{out}");
+    let delete_cmd = if cfg!(windows) {
+        "Remove-Item"
+    } else {
+        "rm -rf"
+    };
+    assert!(out.contains(delete_cmd), "{out}");
     assert!(rt.is_dir() && rp.is_file(), "dry run must not delete");
 
     let o = runa(&home, &["disable", "node", "20.1.0"]);
