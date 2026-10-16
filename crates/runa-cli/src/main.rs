@@ -184,6 +184,14 @@ enum Cmd {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
+    /// 版本管理器：查看状态或安装 nvm / fnm / pyenv / sdkman / asdf / mise（及 Windows 版本）
+    #[command(
+        after_help = "示例:\n  runa manager list\n  runa manager install fnm\n  runa manager install asdf --tool go --yes"
+    )]
+    Manager {
+        #[command(subcommand)]
+        cmd: ManagerCmd,
+    },
     /// 项目环境：一个项目一个环境（local 隔离 / versions 共享 / docker 容器）
     Project {
         #[command(subcommand)]
@@ -256,6 +264,22 @@ enum Cmd {
         name: String,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ManagerCmd {
+    /// 列出各版本管理器在当前平台的状态和安装方式
+    List,
+    /// 安装一个版本管理器（会先显示将执行的命令并确认）
+    Install {
+        name: String,
+        /// 安装后要用它管理的运行时（asdf 会顺带添加对应插件）
+        #[arg(long)]
+        tool: Option<String>,
+        /// 不询问，直接执行
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -749,6 +773,7 @@ fn run(cli: Cli) -> Result<i32> {
             }
             reshim_quiet(&m);
         }
+        Cmd::Manager { cmd } => return manager_cmd(&m, cmd),
         Cmd::Installer { tool, via } => {
             use runa_core::managers;
             if let (Some(t), Some(v)) = (&tool, &via) {
@@ -1044,6 +1069,66 @@ fn uninstall_cmd(
         }
     );
     Ok(0)
+}
+
+fn manager_cmd(m: &Manager, cmd: ManagerCmd) -> Result<i32> {
+    use runa_core::{bootstrap, managers::Probe};
+    let probe = Probe::current(m);
+    match cmd {
+        ManagerCmd::List => {
+            for st in bootstrap::status(&probe) {
+                let state = match (st.supported, st.installed) {
+                    (false, _) => "不支持此平台".to_string(),
+                    (true, true) => "已安装".to_string(),
+                    (true, false) => match &st.method {
+                        Some(mt) => format!("未安装，可通过 {}: {}", mt.method, mt.display),
+                        None => "未安装，没有可用的安装方式".to_string(),
+                    },
+                };
+                println!("{:<12} {:<22} {state}", st.name, st.tools.join(","));
+            }
+            Ok(0)
+        }
+        ManagerCmd::Install { name, tool, yes } => {
+            let name = name.to_ascii_lowercase();
+            if bootstrap::is_installed(&probe, &name) {
+                eprintln!("{name} 已安装");
+                return Ok(0);
+            }
+            let method = bootstrap::plan(&probe, &name)?;
+            eprintln!("将执行: {}", method.display);
+            if !method.rc_note.is_empty() {
+                eprintln!("注意: {}", method.rc_note);
+            } else {
+                eprintln!("不会修改 shell 配置文件");
+            }
+            if !method.note.is_empty() {
+                eprintln!("说明: {}", method.note);
+            }
+            if !yes {
+                use std::io::{IsTerminal, Write};
+                if !std::io::stdin().is_terminal() {
+                    bail!("非交互环境，请加 --yes 确认");
+                }
+                eprint!("继续？[y/N] ");
+                std::io::stderr().flush().ok();
+                let mut a = String::new();
+                std::io::stdin().read_line(&mut a)?;
+                if !matches!(a.trim(), "y" | "Y" | "yes") {
+                    eprintln!("已取消");
+                    return Ok(1);
+                }
+            }
+            bootstrap::install(&probe, &method, tool.as_deref(), &mut |l| {
+                eprintln!("  │ {l}")
+            })?;
+            runa_core::detect::invalidate_cache(m);
+            eprintln!(
+                "✓ {name} 已安装，可用 runa install <tool> <version> --via {name} 通过它安装运行时"
+            );
+            Ok(0)
+        }
+    }
 }
 
 /// Install a new version through the chosen installer (version manager or runa), with
