@@ -55,21 +55,55 @@ runa activate fish | source
 
 | 命令 | 说明 |
 |---|---|
-| `runa install [工具] [版本]` | 安装；支持 `node@20` 写法；不带参数时安装当前目录需要但缺失的全部版本 |
+| `runa install [工具] [版本] [--require-checksum]` | 安装；支持 `node@20` 写法；不带参数时安装当前目录需要但缺失的全部版本；`--require-checksum`（或 `RUNA_REQUIRE_CHECKSUM=1`）在上游没有 SHA256 时拒绝安装 |
 | `runa uninstall <工具> <版本>` | 卸载（对接管的版本只删除链接） |
 | `runa use <工具> <版本> [-g]` | 设置项目版本 / 全局版本，未安装时自动安装（`--no-install` 关闭） |
-| `runa list [工具]` | 已安装版本，`*` 为当前生效 |
+| `runa list [工具] [--json]` | 已安装版本，`*` 为当前生效 |
 | `runa list-all <工具> [前缀]` | 可安装的远程版本 |
 | `runa current [工具]` | 当前生效版本及来源文件 |
 | `runa which <命令>` | 命令实际对应的可执行文件 |
 | `runa exec [--with node@20] -- <命令>` | 在指定版本环境中执行命令 |
+| `runa run [--install-missing] -- <命令>` | 按项目声明的版本执行；`--install-missing` 先补装缺失版本（强制 SHA256）；docker 项目在容器中执行 |
+| `runa context [--json] [--check]` | 给 Agent / AI 的只读版本上下文：项目要求、解析 / 已激活版本、冲突与建议命令；`--check` 未就绪时退出码为 1 |
+| `runa project init [--mode local\|versions\|docker] [--image 镜像]` / `runa project status [--json]` | 一个项目一个环境，默认 local 隔离 |
+| `runa mcp [serve\|config] --project <目录> [--read-only] [--client <客户端>]` | MCP stdio 服务，或输出 AI 客户端配置（cursor / claude-desktop / claude-code / codex / vscode / windsurf / generic） |
+| `runa shell <工具> <版本> [shell]` | 打开临时子 shell 使用某版本（不写任何配置，`exit` 即恢复） |
+| `runa size [工具] [--json]` / `runa clean [--json]` | 统计各版本磁盘占用 / 清理下载缓存 |
+| `runa completion <bash\|zsh\|fish\|powershell\|elvish>` | 输出 shell 补全脚本 |
+| `runa update [--check] [--version vX.Y.Z] [--json]` | 从 GitHub Releases 校验 SHA256 后更新 runa 命令行 |
 | `runa reshim` | 重新生成 shims（如 `npm i -g` 之后） |
 | `runa activate <shell>` / `runa env <shell>` | 输出钩子脚本 / 当前目录的环境变量脚本 |
 | `runa detect` / `runa adopt [工具]` | 检测 / 接管系统已有运行时 |
 | `runa mirror [off\|cn]` | 查看或设置下载镜像 |
 | `runa proxy [off\|system\|URL]` | 查看或设置代理 |
-| `runa setup [shell] [--remove]` | 写入（或移除）shell 配置文件中的激活代码块 |
+| `runa setup [shell] [--remove]` / `runa path-init [shell]` | 写入（或移除）shell 配置文件中的激活代码块（Windows 同时写入用户 PATH） |
+| `runa help [命令]` | 查看总览或某个命令的详细用法与示例 |
 | `runa plugins` / `runa doctor` | 列出工具 / 诊断信息 |
+
+## 项目环境（一个项目一个环境）
+
+```bash
+cd my-app
+runa project init                 # 默认 local：版本、shims、npm/pip/go 缓存都放在 .runa/env，不影响全局
+runa use node 22 && runa install  # 安装到项目自己的环境
+runa run -- npm test              # 按项目声明的版本执行；缺失时可加 --install-missing
+runa project init --mode versions # 只标记为项目，共享全局安装
+runa project init --mode docker --image node:22-bookworm   # runa run 在容器里执行，并先校验镜像中的版本
+```
+
+`.runa/project.json` 可以提交到仓库；`.runa/.gitignore` 会自动忽略其余运行时状态。已初始化的项目拒绝被改成其它模式。
+
+## Agent / AI 与 MCP
+
+- `runa context --json` 输出稳定的只读 JSON（`schema_version: 1`），每个工具给出 `state`（`ready` / `missing_version` / `activation_required` / `override_conflict` / `container_unverified`）和建议命令。
+- `runa mcp serve --project <目录>` 提供 MCP stdio 服务，固定绑定一个项目：`runa_context`、`runa_project_status`、`runa_list`（只读），以及 `runa_project_init`、`runa_use`、`runa_install`、`runa_run`。`--read-only` 只暴露只读工具。每次调用都在项目内以子进程运行，设置 `RUNA_PROJECT_BOUNDARY` 防止越界；通过 MCP 安装只允许 local 项目，且必须有上游 SHA256；调用有超时（1–600 秒）并支持 `notifications/cancelled`。
+- `runa mcp config --project . --client cursor` 只输出配置文本（不改写客户端配置），并提示保存位置。
+
+## 更新 runa
+
+`runa update --check` 查询 GitHub Releases（默认 `xyunjie/runa`，可用 `RUNA_UPDATE_REPO` 指向 fork）。`runa update` 只接受比当前更新的稳定版，下载与当前平台匹配的 `runa-<tag>-<target>` 包，校验 GitHub 资产摘要（`digest`）或发布中的 `SHA256SUMS`（两者都没有则拒绝），运行 `--version` 自检后替换，失败自动回滚。桌面端以安装包发布，请从 Releases 页面下载更新。
+
+> 发布新版本时，tag（如 `v0.2.0`）需与 `Cargo.toml` 中的版本一致，否则 `runa update` 的自检会拒绝该包。
 
 ## 桌面客户端
 
@@ -89,7 +123,7 @@ runa activate fish | source
 
 ## 从源码构建
 
-需要 Rust 1.80+（推荐通过 [rustup](https://rustup.rs) 安装 stable）。
+命令行与核心库需要 Rust 1.88+，桌面端（Tauri）需要 Rust 1.90+（推荐通过 [rustup](https://rustup.rs) 安装 stable）。
 
 ```bash
 cargo build --release -p runa-cli        # 生成 target/release/runa
@@ -138,6 +172,13 @@ gui/ui             桌面端前端（原生 HTML/CSS/JS，无构建步骤）
 gui/preview        浏览器预览用的 IPC 模拟
 examples/plugins   JSON 插件示例
 .github/workflows  CI 与发布流程
+```
+
+Shell 补全：
+
+```bash
+eval "$(runa completion bash)"            # zsh: runa completion zsh；fish: runa completion fish | source
+runa completion powershell | Out-String | Invoke-Expression
 ```
 
 数据目录（默认 `~/.runa`，可用 `RUNA_HOME` 覆盖）：

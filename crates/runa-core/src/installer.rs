@@ -105,6 +105,7 @@ pub fn install(
     net: &Net,
     plugin: &dyn Plugin,
     version: &str,
+    require_checksum: bool,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<PathBuf> {
     validate_version_name(version)?;
@@ -120,6 +121,9 @@ pub fn install(
     paths.ensure()?;
     let target = Target::current();
     let art = plugin.artifact(net, version, &target)?;
+    if art.sha256.is_none() && (require_checksum || require_checksum_env()) {
+        anyhow::bail!("上游未提供 {tool} {version} 的 SHA256 校验值；--require-checksum 拒绝安装");
+    }
     let file_name = sanitize_file_name(&art.file_name);
     let archive_path = paths.downloads().join(&file_name);
 
@@ -193,6 +197,13 @@ pub fn install(
         version: version.into(),
     });
     Ok(dest)
+}
+
+/// `RUNA_REQUIRE_CHECKSUM=1` makes every install demand a publisher checksum.
+pub fn require_checksum_env() -> bool {
+    std::env::var("RUNA_REQUIRE_CHECKSUM")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false)
 }
 
 fn sanitize_file_name(name: &str) -> String {
