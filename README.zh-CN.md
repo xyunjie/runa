@@ -1,7 +1,6 @@
 <div align="center">
 
-<!-- Logo 占位：替换 assets/logo/concept-1.svg 即可 -->
-<img src="assets/logo/concept-1.svg" width="96" height="96" alt="Runa logo">
+<img src="assets/logo/logo.svg" width="96" height="96" alt="Runa logo">
 
 # Runa
 

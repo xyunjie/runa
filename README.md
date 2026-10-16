@@ -1,7 +1,6 @@
 <div align="center">
 
-<!-- Logo placeholder: swap assets/logo/concept-1.svg for the final logo -->
-<img src="assets/logo/concept-1.svg" width="96" height="96" alt="Runa logo">
+<img src="assets/logo/logo.svg" width="96" height="96" alt="Runa logo">
 
 # Runa
 

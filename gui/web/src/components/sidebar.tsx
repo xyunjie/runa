@@ -1,3 +1,4 @@
+import { Logo } from "@/components/logo";
 import { Bot, FolderGit2, FolderPlus, LayoutGrid, Monitor, Moon, Package, ScanLine, Settings, Sun } from "lucide-react";
 import type * as React from "react";
 import { Dot, Mark } from "./common";
@@ -34,9 +35,7 @@ export function Sidebar() {
   return (
     <aside className="flex w-[232px] flex-none flex-col border-r border-border bg-sidebar">
       <div className="flex items-center gap-2.5 px-5 pb-4 pt-5">
-        <span aria-hidden className="flex size-[22px] flex-col justify-center gap-[2.5px] rounded-md bg-fg px-[5px]">
-          <i className="block h-[3px] rounded-sm bg-bg" /><i className="block h-[3px] w-[70%] rounded-sm bg-bg" /><i className="block h-[3px] w-[45%] rounded-sm bg-accent" />
-        </span>
+        <Logo size={22} />
         <span className="text-md font-semibold tracking-[-0.01em]">Runa</span>
       </div>
       <nav aria-label="主导航" className="flex-1 overflow-y-auto px-3">
