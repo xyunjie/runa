@@ -141,8 +141,15 @@ impl Env {
         // nvm-windows: NVM_HOME, else %APPDATA%\nvm
         match (self.var("NVM_HOME"), &self.appdata) {
             (Some(d), _) => v.push(("nvm-windows", d.to_path_buf())),
-            (None, Some(a)) => v.push(("nvm-windows", a.join("nvm"))),
-            _ => {}
+            (None, a) => {
+                // nvm-windows <= 1.1.11 used %APPDATA%\nvm, newer installers %LOCALAPPDATA%\nvm
+                if let Some(a) = a {
+                    v.push(("nvm-windows", a.join("nvm")));
+                }
+                if let Some(l) = &self.local_appdata {
+                    v.push(("nvm-windows", l.join("nvm")));
+                }
+            }
         }
         // mise: MISE_DATA_DIR, else XDG data (or %LOCALAPPDATA%\mise)
         match self.var("MISE_DATA_DIR") {

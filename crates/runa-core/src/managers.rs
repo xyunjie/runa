@@ -50,7 +50,7 @@ pub fn candidates_for(tool: &str, windows: bool) -> Vec<&'static str> {
 }
 
 /// asdf plugin name for a runa tool.
-fn asdf_plugin(tool: &str) -> &str {
+pub fn asdf_plugin(tool: &str) -> &str {
     match tool {
         "node" => "nodejs",
         "go" => "golang",
@@ -73,19 +73,52 @@ pub struct Probe {
     pub env: Env,
     /// Search path (system PATH without runa's own dirs).
     pub path: Vec<PathBuf>,
+    /// Well-known bin dirs searched after `path`, so a manager installed a moment ago (or
+    /// a GUI started without the login PATH) is found without restarting.
+    pub fallback: Vec<PathBuf>,
+}
+
+/// Bin dirs package managers and install scripts put executables in.
+pub fn fallback_bins(env: &Env) -> Vec<PathBuf> {
+    let h = &env.home;
+    let mut v: Vec<PathBuf> = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/home/linuxbrew/.linuxbrew/bin",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect();
+    v.push(h.join(".linuxbrew").join("bin"));
+    v.push(h.join(".local").join("bin"));
+    v.push(h.join(".cargo").join("bin"));
+    v.push(
+        env.var("SCOOP")
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| h.join("scoop"))
+            .join("shims"),
+    );
+    if let Some(l) = &env.local_appdata {
+        v.push(l.join("Microsoft").join("WinGet").join("Links"));
+        v.push(l.join("Microsoft").join("WindowsApps"));
+    }
+    v
 }
 
 impl Probe {
     pub fn current(m: &Manager) -> Self {
+        let env = Env::current();
         Probe {
-            env: Env::current(),
+            fallback: fallback_bins(&env),
+            env,
             path: m.system_path(),
         }
     }
 
-    fn find(&self, exe: &str, extra: &[PathBuf]) -> Option<PathBuf> {
+    pub fn find(&self, exe: &str, extra: &[PathBuf]) -> Option<PathBuf> {
         let mut dirs = extra.to_vec();
         dirs.extend(self.path.iter().cloned());
+        dirs.extend(self.fallback.iter().cloned());
         find_exe_in(&dirs, exe)
     }
 
@@ -542,6 +575,7 @@ mod tests {
                 ..Default::default()
             },
             path,
+            fallback: vec![],
         }
     }
 
@@ -679,6 +713,7 @@ esac
                 ..Default::default()
             },
             path: vec![],
+            fallback: vec![],
         }
         .locate("pyenv", "python")
         .expect("fake pyenv found");
