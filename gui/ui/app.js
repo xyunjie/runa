@@ -7,6 +7,7 @@ const invoke = (cmd, args = {}) => T.core.invoke(cmd, args);
 // ---------------------------------------------------------------- state
 const S = {
   installer: {}, // tool -> InstallerChoice from backend
+  mgrJob: null, // {name, line} while a version manager is being installed
   ov: null, // overview from backend
   loading: true,
   loadError: null,
@@ -188,9 +189,39 @@ function installerPicker(tool) {
   const c = S.installer[tool];
   if (!c) return "";
   const label = (v) => v === "runa" ? "runa 下载" : (PROVIDERS[v] || v);
-  const opts = [["auto", `自动（${label(c.chosen)}）`], ...c.options.map((o) => [o.via, `${label(o.via)}${o.available ? "" : "（未检测到）"}`])];
+  const opts = [["auto", `自动（${label(c.chosen)}）`],
+    ...c.options.map((o) => o.available ? [o.via, label(o.via)] : [`install:${o.via}`, `${label(o.via)} — 安装此管理器…`])];
+  const job = S.mgrJob;
   return `<label class="installer-pick" title="新版本的安装方式：自动时优先使用已检测到的版本管理器，安装后自动登记，卸载也会通过它">安装方式
-    <select class="input" data-installer="${esc(tool)}" style="width:auto;padding:4px 8px">${opts.map(([k, l]) => `<option value="${esc(k)}" ${c.preference === k ? "selected" : ""} ${k !== "auto" && !c.options.find((o) => o.via === k)?.available ? "disabled" : ""}>${esc(l)}</option>`).join("")}</select></label>`;
+    <select class="input" data-installer="${esc(tool)}" style="width:auto;padding:4px 8px" ${job ? "disabled" : ""}>${opts.map(([k, l]) => `<option value="${esc(k)}" ${c.preference === k ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>
+    ${job ? `<span class="muted mgr-job">${icon("refresh", 12, "spin")}正在安装 ${esc(label(job.name))}${job.line ? "：" + esc(job.line) : "…"}</span>` : ""}`;
+}
+
+async function installManager(tool, name) {
+  let plan;
+  try { plan = await invoke("manager_install_plan", { name }); }
+  catch (e) { toast(`无法安装 ${name}`, String(e), "error"); return; }
+  const body = `将执行以下命令（不会使用 sudo）：<br><code class="mono" style="display:block;white-space:pre-wrap;margin:8px 0">${esc(plan.display)}</code>
+    ${plan.rc_note ? `<b>会修改：</b>${esc(plan.rc_note)}` : "不会修改 shell 配置文件。"}${plan.note ? `<br><span class="muted">${esc(plan.note)}</span>` : ""}`;
+  if (!(await confirmDialog({ title: `安装 ${PROVIDERS[name] || name}`, body, ok: "安装" }))) return;
+  S.mgrJob = { name, line: "" };
+  render();
+  try {
+    S.installer[tool] = await invoke("install_manager", { name, tool });
+    toast(`${PROVIDERS[name] || name} 已安装`, `已设为 ${tool} 的安装方式，现在可以通过它安装新版本`);
+  } catch (e) {
+    toast(`安装 ${name} 失败`, String(e), "error");
+  } finally {
+    S.mgrJob = null;
+    render();
+  }
+}
+
+function onManagerProgress(p) {
+  if (!S.mgrJob || S.mgrJob.name !== p.name) return;
+  S.mgrJob.line = p.line;
+  const el = document.querySelector(".mgr-job");
+  if (el) el.innerHTML = `${icon("refresh", 12, "spin")}正在安装 ${esc(PROVIDERS[p.name] || p.name)}：${esc(p.line)}`;
 }
 
 async function loadRemote(tool, force = false) {
@@ -777,6 +808,11 @@ $("#project").addEventListener("change", () => load({ quiet: true }));
 document.addEventListener("change", async (e) => {
   const tool = e.target?.dataset?.installer;
   if (!tool) return;
+  if (e.target.value.startsWith("install:")) {
+    const name = e.target.value.slice(8);
+    render(); // put the select back until the manager is installed
+    return installManager(tool, name);
+  }
   try { S.installer[tool] = await invoke("set_install_via", { tool, via: e.target.value }); }
   catch (err) { toast("无法设置安装方式", String(err), "error"); }
   render();
@@ -787,6 +823,7 @@ $("#refresh").addEventListener("click", () => { S.remote = {}; S.usage = null; l
 hydrateIcons();
 applyTheme();
 T.event.listen("install-progress", (ev) => onProgress(ev.payload));
+T.event.listen("manager-progress", (ev) => onManagerProgress(ev.payload));
 T.event.listen("detect-updated", (ev) => onDetectUpdated(ev.payload));
 window.addEventListener("focus", () => { if (S.detected.status !== "idle") checkDetect(); });
 render();

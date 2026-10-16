@@ -218,6 +218,62 @@ async fn set_install_via(
     .await
 }
 
+/// How `name` would be installed (exact command, rc-file edits). Changes nothing.
+#[tauri::command]
+async fn manager_install_plan(name: String) -> CmdResult<runa_core::bootstrap::Method> {
+    blocking(move || {
+        let m = manager()?;
+        runa_core::bootstrap::plan(&runa_core::managers::Probe::current(&m), &name)
+    })
+    .await
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ManagerLine {
+    name: String,
+    line: String,
+}
+
+/// Install version manager `name` (output streamed as `manager-progress`), then make it
+/// the installer for `tool`. Returns the refreshed installer choice for `tool`.
+#[tauri::command]
+async fn install_manager(
+    app: AppHandle,
+    name: String,
+    tool: String,
+) -> CmdResult<runa_core::managers::InstallerChoice> {
+    blocking(move || {
+        let mut m = manager()?;
+        let t = m.plugin(&tool)?.name().to_string();
+        let probe = runa_core::managers::Probe::current(&m);
+        if !runa_core::bootstrap::is_installed(&probe, &name) {
+            let method = runa_core::bootstrap::plan(&probe, &name)?;
+            let n = name.clone();
+            runa_core::bootstrap::install(&probe, &method, Some(&t), &mut |line| {
+                let _ = app.emit(
+                    "manager-progress",
+                    ManagerLine {
+                        name: n.clone(),
+                        line,
+                    },
+                );
+            })?;
+        }
+        // re-detect and select it
+        let probe = runa_core::managers::Probe::current(&m);
+        runa_core::managers::choose(&probe, &t, &name)?;
+        m.settings.set_install_via(&t, &name)?;
+        m.save_settings()?;
+        runa_core::detect::invalidate_cache(&m);
+        Ok(runa_core::managers::installer_choice(
+            &probe,
+            &t,
+            m.settings.install_via(&t),
+        ))
+    })
+    .await
+}
+
 /// What uninstalling would do (shown in the confirmation dialog). Changes nothing.
 #[tauri::command]
 async fn uninstall_plan(tool: String, version: String, mode: Mode) -> CmdResult<UninstallPlan> {
@@ -444,6 +500,8 @@ fn main() {
             install,
             installer_choice,
             set_install_via,
+            manager_install_plan,
+            install_manager,
             uninstall,
             uninstall_plan,
             set_disabled,
