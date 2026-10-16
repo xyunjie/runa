@@ -132,10 +132,9 @@ fn parse_range(s: &str) -> Option<VersionReq> {
             min = Some(components(r));
         } else if let Some(r) = t.strip_prefix("<=") {
             max = Some((components(r), true));
-        } else if let Some(r) = t.strip_prefix('<') {
-            max = Some((components(r), false));
         } else {
-            return None;
+            let r = t.strip_prefix('<')?;
+            max = Some((components(r), false));
         }
     }
     let (max, incl) = max?;
