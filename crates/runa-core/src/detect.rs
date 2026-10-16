@@ -82,6 +82,11 @@ fn candidate_dirs(m: &Manager, tool: &str) -> Vec<(PathBuf, String)> {
                 v.push((h.join("bin"), "GOROOT".into()));
             }
         }
+        "rust" => {
+            // rustup proxies / `cargo install` dir, often missing from a GUI's PATH
+            let cargo = Env::current().cargo_home().join("bin");
+            v.push((cargo, "cargo".into()));
+        }
         "python" if cfg!(windows) => {
             // the py launcher knows every registered python.org / Store install
             if let Some(out) = run_version(Path::new("py"), &["-0p"]) {
@@ -111,7 +116,7 @@ fn home_bin_dirs(home: PathBuf, label: &str, out: &mut Vec<(PathBuf, String)>) {
 }
 
 /// Vendor / OS default locations (Program Files, /usr/lib/jvm, /usr/local/go, ...).
-fn well_known_bin_dirs(env: &Env, tool: &str) -> Vec<(PathBuf, String)> {
+pub(crate) fn well_known_bin_dirs(env: &Env, tool: &str) -> Vec<(PathBuf, String)> {
     let mut out = Vec::new();
     for (root, suffix) in locations::vendor_roots(env, tool) {
         for d in real_children(&root) {
@@ -159,6 +164,10 @@ fn brew_formula_matches(tool: &str, formula: &str) -> Option<&'static [&'static 
         "python" if formula.starts_with("python@") => Some(&[]),
         "java" if ok("openjdk") => Some(&["libexec", "openjdk.jdk", "Contents", "Home"]),
         "go" if ok("go") => Some(&[]),
+        "ruby" if ok("ruby") => Some(&[]),
+        "rust" if formula == "rust" => Some(&[]),
+        "bun" if formula == "bun" => Some(&[]),
+        "deno" if formula == "deno" => Some(&[]),
         _ => None,
     }
 }
@@ -192,7 +201,7 @@ fn store_scan_dirs(env: &Env, tool: &str, cellars: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 /// Candidate bin dirs inside version-manager stores and Homebrew kegs.
-fn store_bin_dirs(env: &Env, tool: &str, cellars: &[PathBuf]) -> Vec<(PathBuf, String)> {
+pub(crate) fn store_bin_dirs(env: &Env, tool: &str, cellars: &[PathBuf]) -> Vec<(PathBuf, String)> {
     let mut out = Vec::new();
     for st in locations::stores(env, tool) {
         for d in real_children(&st.dir) {
@@ -357,6 +366,9 @@ pub(crate) fn query_home(tool: &str, exe: &Path) -> Option<PathBuf> {
         "python" => (&["-c", "import sys; print(sys.base_prefix)"], None),
         "node" => (&["-p", "process.execPath"], None),
         "go" => (&["env", "GOROOT"], None),
+        // a rustup proxy answers for the toolchain it would run
+        "rust" => (&["--print", "sysroot"], None),
+        "ruby" => (&["-e", "print RbConfig::CONFIG['prefix']"], None),
         _ => return None,
     };
     let out = run_version(exe, args)?;
@@ -392,7 +404,17 @@ pub(crate) fn query_home(tool: &str, exe: &Path) -> Option<PathBuf> {
         };
     }
     let p = platform::canonicalize(&p);
+    if is_os_bundled(&p) {
+        // macOS /usr/bin/ruby lives in Ruby.framework under /System: the stub's shared
+        // prefix decides (view-only system runtime)
+        return None;
+    }
     (p.is_dir() && !is_system_prefix(&p) && !locations::is_shim_dir(&p)).then_some(p)
+}
+
+/// Runtimes shipped inside the OS image (macOS `/System/Library/Frameworks/...`).
+pub(crate) fn is_os_bundled(p: &Path) -> bool {
+    platform::path_key_for(p, false).starts_with("/System/")
 }
 
 /// Fallback: `<root>/bin/<exe>` (or `<root>\<exe>.exe` on Windows), accepted only when
@@ -505,8 +527,8 @@ pub fn fingerprint(m: &Manager) -> Fingerprint {
     let mut dirs: Vec<PathBuf> = m.system_path();
     let env = Env::current();
     let cellars = env.brew_cellars();
-    for tool in ["node", "python", "java", "go"] {
-        dirs.extend(store_scan_dirs(&env, tool, &cellars));
+    for tool in m.registry.names() {
+        dirs.extend(store_scan_dirs(&env, &tool, &cellars));
     }
     let mut seen = std::collections::BTreeSet::new();
     let dirs = dirs

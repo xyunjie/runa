@@ -346,6 +346,50 @@ pub fn plan(m: &Manager, tool: &str, version: &str, mode: Mode) -> Result<Uninst
             p.command = Some(vec!["bash".into(), "-c".into(), script.clone()]);
             p.command_line = Some(format!("bash -c {}", q(&script)));
         }
+        "rustup" => {
+            let id = id()?;
+            let root = store()?;
+            let cargo_bin = env.cargo_home().join("bin");
+            p.env.push(("RUSTUP_HOME".into(), disp(&root)));
+            p.command = Some(vec![
+                find_tool(
+                    m,
+                    "rustup",
+                    &[
+                        cargo_bin,
+                        root.parent()
+                            .map(|d| d.join(".cargo").join("bin"))
+                            .unwrap_or_default(),
+                    ],
+                ),
+                "toolchain".into(),
+                "uninstall".into(),
+                id.clone(),
+            ]);
+            p.command_line = Some(format!("rustup toolchain uninstall {}", q(&id)));
+        }
+        "rbenv" => {
+            let id = id()?;
+            let root = store()?;
+            p.env.push(("RBENV_ROOT".into(), disp(&root)));
+            p.command = Some(vec![
+                find_tool(m, "rbenv", &[root.join("bin")]),
+                "uninstall".into(),
+                "-f".into(),
+                id.clone(),
+            ]);
+            p.command_line = Some(format!("rbenv uninstall -f {}", q(&id)));
+        }
+        "rvm" => {
+            let id = id()?;
+            let script = format!(
+                "export rvm_path={}; source \"$rvm_path/scripts/rvm\" && rvm remove {}",
+                q(&disp(&store()?)),
+                q(&id)
+            );
+            p.command = Some(vec!["bash".into(), "-c".into(), script.clone()]);
+            p.command_line = Some(format!("bash -c {}", q(&script)));
+        }
         "asdf" => {
             let (plugin, id) = (package()?, id()?);
             let data = store()?;

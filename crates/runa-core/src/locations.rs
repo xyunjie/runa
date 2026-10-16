@@ -41,6 +41,12 @@ pub const ENV_VARS: &[&str] = &[
     "SCOOP_GLOBAL",
     "HOMEBREW_CELLAR",
     "ChocolateyInstall",
+    "RUSTUP_HOME",
+    "CARGO_HOME",
+    "RBENV_ROOT",
+    "rvm_path",
+    "BUN_INSTALL",
+    "DENO_INSTALL",
 ];
 
 impl Env {
@@ -106,6 +112,10 @@ impl Env {
             ("nvm", or("NVM_DIR", h.join(".nvm"))),
             ("sdkman", or("SDKMAN_DIR", h.join(".sdkman"))),
             ("asdf", or("ASDF_DATA_DIR", h.join(".asdf"))),
+            ("rustup", or("RUSTUP_HOME", h.join(".rustup"))),
+            ("rbenv", or("RBENV_ROOT", h.join(".rbenv"))),
+            ("rvm", or("rvm_path", h.join(".rvm"))),
+            ("chruby", h.join(".rubies")),
         ];
         // pyenv / pyenv-win: PYENV_ROOT points at `.pyenv` (unix) or `.pyenv\pyenv-win`
         let pyenv_win = h.join(".pyenv").join("pyenv-win");
@@ -169,6 +179,13 @@ impl Env {
             v.push(("scoop-global", pd.join("scoop")));
         }
         v
+    }
+
+    /// `$CARGO_HOME` (default `~/.cargo`): rustup and `cargo install` binaries.
+    pub fn cargo_home(&self) -> PathBuf {
+        self.var("CARGO_HOME")
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.home.join(".cargo"))
     }
 
     /// Data dirs of `provider` (see [`Env::manager_dirs`]), most specific first.
@@ -333,6 +350,53 @@ pub fn stores(env: &Env, tool: &str) -> Vec<Store> {
                 ..store(env.home.join("sdk"), WELL_KNOWN, &[])
             });
         }
+        "rust" => {
+            for d in md("rustup") {
+                v.push(store(d.join("toolchains"), "rustup", &[]));
+            }
+            for d in md("asdf") {
+                v.push(store(d.join("installs").join("rust"), "asdf", &[]));
+            }
+            for d in md("mise") {
+                v.push(store(d.join("installs").join("rust"), "mise", &[]));
+            }
+        }
+        "ruby" => {
+            for d in md("rbenv") {
+                v.push(store(d.join("versions"), "rbenv", &[]));
+            }
+            for d in md("rvm") {
+                v.push(Store {
+                    filter: ChildFilter::Prefix("ruby-"),
+                    ..store(d.join("rubies"), "rvm", &[])
+                });
+            }
+            for d in md("chruby") {
+                v.push(store(d, "chruby", &[]));
+            }
+            v.push(store(PathBuf::from("/opt/rubies"), "chruby", &[]));
+            for d in md("asdf") {
+                v.push(store(d.join("installs").join("ruby"), "asdf", &[]));
+            }
+            for d in md("mise") {
+                v.push(store(d.join("installs").join("ruby"), "mise", &[]));
+            }
+            // RubyInstaller: C:\Ruby33-x64, ...
+            if cfg!(windows) {
+                v.push(Store {
+                    filter: ChildFilter::Prefix("Ruby"),
+                    ..store(PathBuf::from(r"C:\"), WELL_KNOWN, &[])
+                });
+            }
+        }
+        "bun" | "deno" => {
+            for d in md("asdf") {
+                v.push(store(d.join("installs").join(tool), "asdf", &[]));
+            }
+            for d in md("mise") {
+                v.push(store(d.join("installs").join(tool), "mise", &[]));
+            }
+        }
         _ => {}
     }
     // scoop: apps/<app>/<version>
@@ -377,6 +441,10 @@ fn scoop_apps(tool: &str) -> &'static [&'static str] {
             "liberica-jdk",
         ],
         "go" => &["go"],
+        "rust" => &["rust", "rust-gnu", "rust-msvc"],
+        "ruby" => &["ruby", "ruby33", "ruby32", "ruby31"],
+        "bun" => &["bun"],
+        "deno" => &["deno"],
         _ => &[],
     }
 }
@@ -435,6 +503,17 @@ pub fn fixed_homes(env: &Env, tool: &str) -> Vec<PathBuf> {
                 }
             }
         }
+        // official install scripts
+        "bun" => v.push(
+            env.var("BUN_INSTALL")
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| env.home.join(".bun")),
+        ),
+        "deno" => v.push(
+            env.var("DENO_INSTALL")
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| env.home.join(".deno")),
+        ),
         _ => {}
     }
     v
@@ -514,6 +593,10 @@ pub fn owner(home: &Path, env: &Env) -> Owner {
         ("mise", &["installs"], true),
         ("fnm", &["node-versions"], false),
         ("nvm-windows", &[], false),
+        ("rustup", &["toolchains"], false),
+        ("rbenv", &["versions"], false),
+        ("rvm", &["rubies"], false),
+        ("chruby", &[], false),
         ("scoop", &["apps"], true),
         ("scoop-global", &["apps"], true),
     ];
@@ -558,6 +641,11 @@ pub fn owner(home: &Path, env: &Env) -> Owner {
         ("/.asdf/installs/", "asdf", 6, true),
         ("/mise/installs/", "mise", 5, true),
         ("/fnm/node-versions/", "fnm", 4, false),
+        ("/.rustup/toolchains/", "rustup", 8, false),
+        ("/.rbenv/versions/", "rbenv", 7, false),
+        ("/.rvm/rubies/", "rvm", 5, false),
+        ("/.rubies/", "chruby", 8, false),
+        ("/opt/rubies/", "chruby", 11, false),
         ("/appdata/roaming/nvm/", "nvm-windows", 20, false),
         ("/programdata/scoop/apps/", "scoop-global", 18, true),
         ("/scoop/apps/", "scoop", 6, true),
@@ -673,7 +761,7 @@ fn is_windows_installer_path(low: &str, env: &Env) -> bool {
         || low.contains("/appdata/local/programs/")
         || drive_rest(low).is_some_and(|r| {
             let first = r.split('/').next().unwrap_or("");
-            first == "go" || first.starts_with("python")
+            first == "go" || first.starts_with("python") || first.starts_with("ruby")
         })
 }
 
@@ -740,7 +828,11 @@ pub fn is_system_prefix(p: &Path, env: &Env) -> bool {
 /// `pyenv-win\shims`, `~/.asdf/shims`, mise shims, ...): never a runtime home.
 pub fn is_shim_dir(p: &Path) -> bool {
     let k = path_key_for(p, true);
-    k.ends_with("/shims") || k.contains("/shims/")
+    // ~/.cargo/bin holds rustup proxies (and `cargo install` tools): never a toolchain
+    k.ends_with("/shims")
+        || k.contains("/shims/")
+        || k.ends_with("/.cargo")
+        || k.ends_with("/.cargo/bin")
 }
 
 /// Parse `py -0p` (Windows py launcher) output into interpreter paths.
