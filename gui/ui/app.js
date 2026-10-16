@@ -6,6 +6,7 @@ const invoke = (cmd, args = {}) => T.core.invoke(cmd, args);
 
 // ---------------------------------------------------------------- state
 const S = {
+  installer: {}, // tool -> InstallerChoice from backend
   ov: null, // overview from backend
   loading: true,
   loadError: null,
@@ -179,6 +180,19 @@ function usageOf(tool, version) {
   return S.usage.filter((u) => u.tool === tool && (version == null || u.version === version)).reduce((a, u) => a + u.bytes, 0);
 }
 
+async function loadInstaller(tool) {
+  try { S.installer[tool] = await invoke("installer_choice", { tool }); render(); } catch { /* optional */ }
+}
+
+function installerPicker(tool) {
+  const c = S.installer[tool];
+  if (!c) return "";
+  const label = (v) => v === "runa" ? "runa 下载" : (PROVIDERS[v] || v);
+  const opts = [["auto", `自动（${label(c.chosen)}）`], ...c.options.map((o) => [o.via, `${label(o.via)}${o.available ? "" : "（未检测到）"}`])];
+  return `<label class="installer-pick" title="新版本的安装方式：自动时优先使用已检测到的版本管理器，安装后自动登记，卸载也会通过它">安装方式
+    <select class="input" data-installer="${esc(tool)}" style="width:auto;padding:4px 8px">${opts.map(([k, l]) => `<option value="${esc(k)}" ${c.preference === k ? "selected" : ""} ${k !== "auto" && !c.options.find((o) => o.via === k)?.available ? "disabled" : ""}>${esc(l)}</option>`).join("")}</select></label>`;
+}
+
 async function loadRemote(tool, force = false) {
   if (!force && S.remote[tool]?.status === "ok") return;
   S.remote[tool] = { status: "loading" };
@@ -317,6 +331,7 @@ function pageTool(name) {
   if (!t) return `<div class="page">${emptyState("package", "未知工具", name)}</div>`;
   const tab = S.tab[name] || (t.installed.length ? "installed" : "available");
   if (tab === "available" && !S.remote[name]) setTimeout(() => loadRemote(name));
+  if (tab === "available" && !S.installer[name]) setTimeout(() => loadInstaller(name));
   const cur = t.current;
   let activeHtml;
   if (!cur) activeHtml = `<div class="label">当前版本</div><div class="muted">未设置</div>`;
@@ -346,7 +361,7 @@ function jobCard(tool) {
   if (!j) return "";
   const pct = j.total ? Math.min(100, Math.floor((j.done / j.total) * 100)) : null;
   const indet = j.stage !== "downloading" || pct == null;
-  const stageText = { resolving: "正在解析版本…", downloading: "正在下载", verifying: "正在校验 SHA256…", extracting: "正在解压…", done: "完成" }[j.stage] || "准备中…";
+  const stageText = { resolving: "正在解析版本…", downloading: "正在下载", verifying: "正在校验 SHA256…", extracting: "正在解压…", manager: `通过 ${j.via || "版本管理器"} 安装：${j.command || ""}`, output: `通过 ${j.via || "版本管理器"} 安装：${j.line || ""}`, done: "完成" }[j.stage] || "准备中…";
   return `<div class="card progress-card" role="status" aria-live="polite">
     <div class="progress-top"><div class="t">${icon("refresh", 14, "spin")}安装 ${esc(tool)} ${esc(j.version || j.spec || "")}</div>
       <div class="n">${pct != null && j.stage === "downloading" ? pct + "%" : ""}</div></div>
@@ -402,7 +417,7 @@ function availableList(t) {
       <button class="btn btn-primary" data-act="install-query" data-tool="${esc(tool)}" ${busy ? "disabled" : ""}>${icon("download", 14)}安装</button>
       <button class="btn btn-icon" data-act="reload-remote" data-tool="${esc(tool)}" aria-label="刷新版本列表" title="刷新版本列表">${icon("refresh", 14, r.status === "loading" ? "spin" : "")}</button>
     </div>
-    <div class="hint-line">${q ? `按 <span class="kbd">Enter</span> 安装匹配 “${esc(q)}” 的最新版本` : "支持模糊版本：输入主版本号即可安装该系列的最新版"}</div>`;
+    <div class="hint-line">${installerPicker(tool)} ${q ? `按 <span class="kbd">Enter</span> 安装匹配 “${esc(q)}” 的最新版本` : "支持模糊版本：输入主版本号即可安装该系列的最新版"}</div>`;
   if (r.status === "loading")
     return search + `<div class="list">${[1, 2, 3, 4, 5, 6].map(() => `<div class="item"><div class="main-col"><div class="skel" style="width:${60 + Math.random() * 60}px;height:12px"></div></div><div class="skel" style="width:56px;height:24px"></div></div>`).join("")}</div>`;
   if (r.status === "error")
@@ -533,8 +548,9 @@ async function install(tool, spec) {
   S.jobs[tool] = { stage: "resolving", spec };
   render();
   try {
-    const v = await invoke("install", { tool, spec });
-    toast(`${tool} ${v} 已安装`, "已生成 shims，可立即使用");
+    const r = await invoke("install", { tool, spec });
+    const v = r.version;
+    toast(`${tool} ${v} 已安装`, r.via === "runa" ? "已生成 shims，可立即使用" : `已通过 ${r.via} 安装并登记，卸载时也会通过 ${r.via}`);
     S.tab[tool] = "installed";
   } catch (e) {
     toast(`安装 ${tool} ${spec} 失败`, String(e), "error");
@@ -562,6 +578,8 @@ function onProgress(p) {
   }
   j.stage = p.stage;
   if (p.version) j.version = p.version;
+  if (p.via) { j.via = p.via; j.command = p.command; }
+  if (p.stage === "output") j.line = p.line;
   // patch the progress card in place for smooth updates
   const card = document.querySelector(".progress-card");
   if (route().name === "tool" && route().arg === p.tool && card) {
@@ -756,6 +774,13 @@ document.addEventListener("keydown", (e) => {
   if (e.target.id === "project") e.target.blur();
 });
 $("#project").addEventListener("change", () => load({ quiet: true }));
+document.addEventListener("change", async (e) => {
+  const tool = e.target?.dataset?.installer;
+  if (!tool) return;
+  try { S.installer[tool] = await invoke("set_install_via", { tool, via: e.target.value }); }
+  catch (err) { toast("无法设置安装方式", String(err), "error"); }
+  render();
+});
 $("#refresh").addEventListener("click", () => { S.remote = {}; S.usage = null; load({ quiet: true }); });
 
 // ---------------------------------------------------------------- boot

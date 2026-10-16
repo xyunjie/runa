@@ -145,26 +145,75 @@ async fn disk_usage() -> CmdResult<Vec<Usage>> {
     .await
 }
 
+#[derive(serde::Serialize)]
+struct InstallResult {
+    version: String,
+    /// `runa` or the version manager that installed it.
+    via: String,
+}
+
 #[tauri::command]
-async fn install(app: AppHandle, tool: String, spec: String) -> CmdResult<String> {
+async fn install(
+    app: AppHandle,
+    tool: String,
+    spec: String,
+    via: Option<String>,
+) -> CmdResult<InstallResult> {
     blocking(move || {
         let m = manager()?;
         let mut last = Instant::now() - Duration::from_secs(1);
-        let v = m.install(&tool, &spec, &mut |p| {
-            if let Progress::Downloading { done, total, .. } = &p {
-                let finished = total.map(|t| *done >= t).unwrap_or(false);
-                if last.elapsed() < Duration::from_millis(120) && !finished {
-                    return;
-                }
-                last = Instant::now();
+        let (v, used) = runa_core::managers::install(&m, &tool, &spec, via.as_deref(), &mut |p| {
+            let throttled = matches!(&p, Progress::Downloading { done, total, .. } if !total.map(|t| *done >= t).unwrap_or(false))
+                || matches!(&p, Progress::Output { .. });
+            if throttled && last.elapsed() < Duration::from_millis(120) {
+                return;
             }
+            last = Instant::now();
             let _ = app.emit("install-progress", &p);
         })?;
         if m.global_version(&tool).is_none() {
             m.set_global(&tool, &v)?;
         }
         let _ = activate::reshim(&m, &activate::cli_path());
-        Ok(v)
+        Ok(InstallResult { version: v, via: used })
+    })
+    .await
+}
+
+/// Which installer a new version of `tool` would use (and the alternatives).
+#[tauri::command]
+async fn installer_choice(tool: String) -> CmdResult<runa_core::managers::InstallerChoice> {
+    blocking(move || {
+        let m = manager()?;
+        let t = m.plugin(&tool)?.name().to_string();
+        Ok(runa_core::managers::installer_choice(
+            &runa_core::managers::Probe::current(&m),
+            &t,
+            m.settings.install_via(&t),
+        ))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn set_install_via(
+    tool: String,
+    via: String,
+) -> CmdResult<runa_core::managers::InstallerChoice> {
+    blocking(move || {
+        let mut m = manager()?;
+        let t = m.plugin(&tool)?.name().to_string();
+        let probe = runa_core::managers::Probe::current(&m);
+        if via != "auto" && via != "runa" {
+            runa_core::managers::choose(&probe, &t, &via)?;
+        }
+        m.settings.set_install_via(&t, &via)?;
+        m.save_settings()?;
+        Ok(runa_core::managers::installer_choice(
+            &probe,
+            &t,
+            m.settings.install_via(&t),
+        ))
     })
     .await
 }
@@ -393,6 +442,8 @@ fn main() {
             remote_versions,
             disk_usage,
             install,
+            installer_choice,
+            set_install_via,
             uninstall,
             uninstall_plan,
             set_disabled,
